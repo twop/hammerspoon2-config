@@ -67,7 +67,11 @@ function setWindowFrame(
 	else if (position === "center")
 		x = screenFrame.x + (screenFrame.w - width) / 2;
 
-	win.frame = { x, y: screenFrame.y, w: width, h: screenFrame.h } as HSRect;
+	// HSWindow.frame is typed as a real HSRect instance, not a plain
+	// {x,y,w,h} dictionary (unlike hs.canvas's rect parameters, which take a
+	// loose object) -- a plain literal cast with `as HSRect` satisfies the
+	// type checker but not the native setter, which silently no-ops on it.
+	win.frame = new HSRect(x, screenFrame.y, width, screenFrame.h);
 }
 
 function maximizeFocusedWindow(): void {
@@ -78,6 +82,23 @@ function maximizeFocusedWindow(): void {
 
 function toggleFullScreenFocusedWindow(): void {
 	hs.window.focusedWindow()?.toggleFullscreen();
+}
+
+// ============================================================
+// APP VISIBILITY
+// ============================================================
+
+// Only "standard" (Dock-visible) apps, matching macOS's own Cmd+Option+H --
+// "accessory"/"background" apps have no Dock presence to begin with, and
+// hiding them wouldn't do anything a user would notice anyway.
+function hideOtherApps(): void {
+	const frontmost = hs.application.frontmost();
+	for (const app of hs.application.runningApplications()) {
+		if (app.kind !== "standard") continue;
+		if (app.pid === frontmost?.pid) continue;
+		if (app.bundleID === hs.appinfo.bundleIdentifier) continue;
+		app.hide();
+	}
 }
 
 // ============================================================
@@ -216,10 +237,7 @@ export const menuTree: MenuItem[] = [
 		key: "f",
 		label: "Hide others",
 		icon: symbol("rectangle.and.hand.point.up.left"),
-		action: {
-			kind: "url",
-			url: "raycast://extensions/raycast/system/hide-all-apps-except-frontmost",
-		},
+		action: { kind: "callback", run: hideOtherApps },
 	},
 
 	{
