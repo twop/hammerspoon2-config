@@ -27,5 +27,5 @@ const hotkeys = [
 		null,
 	),
 	// LEADER MENU (Hyper+M) -- LeaderKey-style popup.
-	hs.hotkey.bind(hyper, "m", () => LeaderMenu.show(menuTree), null),
+	hs.hotkey.bind(hyper, "space", () => LeaderMenu.show(menuTree), null),
 ];

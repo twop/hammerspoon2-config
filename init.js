@@ -128,6 +128,22 @@ var PLACEHOLDER_ENTER_DURATION = 0.2;
 var SPLIT_TRANSITION_DURATION = 0.22;
 var SLIDE_OFFSET_PX = 14;
 var SPLIT_GAP_PX = 24;
+var cachedPrimaryScreenHeight = null;
+hs.screen.on("change", () => {
+  cachedPrimaryScreenHeight = null;
+});
+function primaryScreenHeight() {
+  if (cachedPrimaryScreenHeight === null) {
+    cachedPrimaryScreenHeight = hs.screen.primary().fullFrame.h;
+  }
+  return cachedPrimaryScreenHeight;
+}
+function flipTopLeftY(point) {
+  return { x: point.x, y: primaryScreenHeight() - point.y };
+}
+function flipFrameY(rect) {
+  return { x: rect.x, y: primaryScreenHeight() - rect.y - rect.h, w: rect.w, h: rect.h };
+}
 function nowMs() {
   return hs.timer.absoluteTime() / 1e6;
 }
@@ -141,10 +157,13 @@ function animateCanvas(canvas2, opts) {
   const tick = () => {
     const t = Math.min((nowMs() - startMs) / durationMs, 1);
     const e = easeOutCubic(t);
-    canvas2.setTopLeft({
-      x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
-      y: fromPoint.y + (toPoint.y - fromPoint.y) * e
-    });
+    canvas2.setTopLeft(
+      flipTopLeftY({
+        x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
+        y: fromPoint.y + (toPoint.y - fromPoint.y) * e
+      })
+    );
+    opts.onTick?.(e);
     return t >= 1;
   };
   if (tick()) {
@@ -267,7 +286,10 @@ function selectOption(opt, breadcrumb) {
     }
     case "app":
       closeMenu("app launched");
-      void hs.application.launchOrFocus(action.bundleID);
+      hs.timer.doAfter(0, async () => {
+        await hs.application.launchOrFocus(action.bundleID);
+        hs.application.matchingBundleID(action.bundleID)?.activate();
+      });
       break;
     case "cmd":
       closeMenu("cmd started");
@@ -300,7 +322,7 @@ function menuRestTopLeft(w, h) {
 }
 function buildPlaceholderCanvas(topLeft) {
   const size = Theme.placeholderCanvasSize;
-  const c = hs.canvas.create({ x: topLeft.x, y: topLeft.y, w: size, h: size });
+  const c = hs.canvas.create(flipFrameY({ x: topLeft.x, y: topLeft.y, w: size, h: size }));
   c.appendElements([
     {
       type: "circle",
@@ -329,16 +351,23 @@ function buildPlaceholderCanvas(topLeft) {
   c.clickActivating(false);
   return c;
 }
+function setPlaceholderOpacity(c, factor) {
+  c.setElementAttribute(0, "fillColor", canvasColor(Theme.background, Theme.backgroundAlpha * factor));
+  c.setElementAttribute(1, "strokeColor", canvasColor(Theme.border, factor));
+  c.setElementAttribute(2, "fillColor", canvasColor(Theme.border, factor));
+}
 function showPlaceholderInitial() {
   const rest = placeholderRestTopLeft("screen");
   const start = { x: rest.x, y: rest.y + SLIDE_OFFSET_PX };
   const c = buildPlaceholderCanvas(start);
+  setPlaceholderOpacity(c, 0);
   c.show();
   placeholderCanvas = c;
   animateCanvas(c, {
     fromPoint: start,
     toPoint: rest,
-    duration: PLACEHOLDER_ENTER_DURATION
+    duration: PLACEHOLDER_ENTER_DURATION,
+    onTick: (e) => setPlaceholderOpacity(c, e)
   });
 }
 function revealMenu() {
@@ -348,7 +377,7 @@ function revealMenu() {
   if (placeholderCanvas) {
     const leftRest = placeholderRestTopLeft("left");
     animateCanvas(placeholderCanvas, {
-      fromPoint: placeholderCanvas.topLeft(),
+      fromPoint: flipTopLeftY(placeholderCanvas.topLeft()),
       toPoint: leftRest,
       duration: SPLIT_TRANSITION_DURATION
     });
@@ -365,7 +394,7 @@ function renderMenu(options, breadcrumb, opts = {}) {
   if (breadcrumb.length > 0) h += breadcrumbSpace;
   const restTopLeft = menuRestTopLeft(w, h);
   const { x, y } = restTopLeft;
-  const c = hs.canvas.create({ x, y, w, h });
+  const c = hs.canvas.create(flipFrameY({ x, y, w, h }));
   c.appendElements([
     {
       type: "rectangle",
@@ -504,7 +533,7 @@ function renderMenu(options, breadcrumb, opts = {}) {
   if (opts.entering) {
     const restPos = { x, y };
     const startPos = { x, y: y + SLIDE_OFFSET_PX };
-    c.setTopLeft(startPos);
+    c.setTopLeft(flipTopLeftY(startPos));
     c.show();
     animateCanvas(c, {
       fromPoint: startPos,
@@ -523,15 +552,12 @@ function bindKeys(options, breadcrumb) {
     (event) => {
       armRevealTimer();
       const codeMap = hs.keycodes.map;
-      let pressed = String(codeMap[String(event.keyCode)] ?? "");
-      if (event.flags.includes("shift") && pressed.length === 1 && /[a-z]/i.test(pressed)) {
-        pressed = pressed.toUpperCase();
-      }
-      if (pressed === "escape") {
+      const keyName = String(codeMap[String(event.keyCode)] ?? "");
+      if (keyName === "escape") {
         closeMenu("esc pressed");
         return hs.eventtap.consume;
       }
-      if (pressed === "delete") {
+      if (keyName === "delete") {
         if (stack.length <= 1) {
           closeMenu("backspace at root");
         } else {
@@ -542,6 +568,7 @@ function bindKeys(options, breadcrumb) {
         }
         return hs.eventtap.consume;
       }
+      const pressed = event.characters ?? "";
       for (const opt of options) {
         if (pressed === opt.key) {
           selectOption(opt, breadcrumb);
@@ -563,7 +590,7 @@ function bindKeys(options, breadcrumb) {
 }
 function withinCanvas(point) {
   if (!canvas) return false;
-  const f = canvas.frame();
+  const f = flipFrameY(canvas.frame());
   return point.x >= f.x && point.x <= f.x + f.w && point.y >= f.y && point.y <= f.y + f.h;
 }
 function startMouseWatcher() {
@@ -16248,7 +16275,12 @@ var imageCache = /* @__PURE__ */ new Map();
 function emojiImage(char) {
   const cached = imageCache.get(char);
   if (cached !== void 0) return cached;
-  const c = hs.canvas.create({ x: 0, y: 0, w: EMOJI_IMAGE_SIZE, h: EMOJI_IMAGE_SIZE });
+  const c = hs.canvas.create({
+    x: 0,
+    y: 0,
+    w: EMOJI_IMAGE_SIZE,
+    h: EMOJI_IMAGE_SIZE
+  });
   c.appendElements([
     {
       type: "text",
@@ -16312,7 +16344,11 @@ function buildRankedChoices() {
   const frequent = allChoices.filter((c) => (freq[c.char] ?? 0) > 0);
   const rest = allChoices.filter((c) => (freq[c.char] ?? 0) <= 0);
   frequent.sort((a, b) => (freq[b.char] ?? 0) - (freq[a.char] ?? 0));
-  return [...frequent.slice(0, FREQUENT_PIN_COUNT), ...rest, ...frequent.slice(FREQUENT_PIN_COUNT)];
+  return [
+    ...frequent.slice(0, FREQUENT_PIN_COUNT),
+    ...rest,
+    ...frequent.slice(FREQUENT_PIN_COUNT)
+  ];
 }
 function show2() {
   ensureLoaded();
@@ -16415,27 +16451,30 @@ function showWindowChooser(windows) {
   c.onSelect = (choice) => {
     if (!choice) return;
     const win = windows[choice["winIndex"]];
-    if (win) focusWindow(win);
+    if (win) hs.timer.doAfter(0, () => focusWindow(win));
   };
   c.show();
 }
-async function onSelect2(choice) {
+async function activateApp(bundleID) {
+  await hs.application.launchOrFocus(bundleID);
+  hs.application.matchingBundleID(bundleID)?.activate();
+}
+function onSelect2(choice) {
   if (!choice) return;
   const path = choice["path"];
-  const bundleID = bundleIDForPath(path);
-  const app = bundleID ? hs.application.matchingBundleID(bundleID) : null;
-  if (!app) {
-    if (bundleID) await hs.application.launchOrFocus(bundleID);
-    return;
-  }
-  const windows = app.allWindows.filter((w) => w.isStandard);
-  if (windows.length === 0) {
-    app.activate();
-  } else if (windows.length === 1) {
-    focusWindow(windows[0]);
-  } else {
-    showWindowChooser(windows);
-  }
+  hs.timer.doAfter(0, async () => {
+    const bundleID = bundleIDForPath(path);
+    if (!bundleID) return;
+    const app = hs.application.matchingBundleID(bundleID);
+    const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
+    if (windows.length === 1) {
+      focusWindow(windows[0]);
+    } else if (windows.length > 1) {
+      showWindowChooser(windows);
+    } else {
+      await activateApp(bundleID);
+    }
+  });
 }
 function scanApps() {
   const choices = [];
@@ -16462,16 +16501,14 @@ function scanApps() {
   return choices;
 }
 function ensureLoaded3() {
-  console.log("here");
   if (chooser3) return;
-  console.log("here: after");
   allChoices2 = scanApps();
   chooser3 = hs.chooser.create();
   styleChooser(chooser3);
   chooser3.visibleRows = 9;
   chooser3.searchSubText = true;
   chooser3.placeholder = "Open or focus app\u2026";
-  chooser3.onSelect = (choice) => void onSelect2(choice);
+  chooser3.onSelect = onSelect2;
 }
 function show4() {
   ensureLoaded3();
@@ -16730,6 +16767,7 @@ function symbol(name) {
   return HSImage.fromSymbol(name);
 }
 var APP_BUNDLE_IDS = {
+  alacritty: "org.alacritty",
   zed: "dev.zed.Zed",
   arc: "company.thebrowser.Browser",
   telegram: "ru.keepcoder.Telegram",
@@ -16751,7 +16789,8 @@ function setWindowFrame(widthFraction, position) {
   const width = screenFrame.w * widthFraction;
   let x = screenFrame.x;
   if (position === "right") x = screenFrame.x + screenFrame.w - width;
-  else if (position === "center") x = screenFrame.x + (screenFrame.w - width) / 2;
+  else if (position === "center")
+    x = screenFrame.x + (screenFrame.w - width) / 2;
   win.frame = { x, y: screenFrame.y, w: width, h: screenFrame.h };
 }
 function maximizeFocusedWindow() {
@@ -16777,7 +16816,11 @@ function openDailyNote() {
   summon("journal", "hx " + shellQuote(path));
 }
 var menuTree = [
-  { key: "t", label: "Alacritty", action: { kind: "app", bundleID: "io.alacritty" } },
+  {
+    key: "t",
+    label: "Alacritty",
+    action: { kind: "app", bundleID: APP_BUNDLE_IDS.alacritty }
+  },
   {
     key: "r",
     label: "Resize window",
@@ -16785,25 +16828,106 @@ var menuTree = [
     action: {
       kind: "submenu",
       submenu: [
-        { key: "h", label: "Left 1/3", icon: symbol("inset.filled.leftthird.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 3, "left") } },
-        { key: "l", label: "Right 1/3", icon: symbol("inset.filled.trailingthird.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 3, "right") } },
-        { key: "j", label: "Left 2/3", icon: symbol("inset.filled.lefthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(2 / 3, "left") } },
-        { key: "k", label: "Right 2/3", icon: symbol("inset.filled.righthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(2 / 3, "right") } },
-        { key: "m", label: "Maximize", icon: symbol("inset.filled.rectangle"), action: { kind: "callback", run: maximizeFocusedWindow } },
-        { key: ",", label: "Center 2/3", icon: symbol("inset.filled.center.rectangle"), action: { kind: "callback", run: () => setWindowFrame(2 / 3, "center") } },
-        { key: ".", label: "Center 1/2", icon: symbol("inset.filled.rectangle.portrait"), action: { kind: "callback", run: () => setWindowFrame(1 / 2, "center") } },
-        { key: "H", label: "Left 1/2", icon: symbol("inset.filled.lefthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 2, "left") } },
-        { key: "L", label: "Right 1/2", icon: symbol("inset.filled.righthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 2, "right") } },
-        { key: "f", label: "Full screen", icon: symbol("arrow.up.backward.and.arrow.down.forward.rectangle"), action: { kind: "callback", run: toggleFullScreenFocusedWindow } }
+        {
+          key: "h",
+          label: "Left 1/3",
+          icon: symbol("inset.filled.leftthird.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(1 / 3, "left")
+          }
+        },
+        {
+          key: "l",
+          label: "Right 1/3",
+          icon: symbol("inset.filled.trailingthird.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(1 / 3, "right")
+          }
+        },
+        {
+          key: "j",
+          label: "Left 2/3",
+          icon: symbol("inset.filled.lefthalf.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(2 / 3, "left")
+          }
+        },
+        {
+          key: "k",
+          label: "Right 2/3",
+          icon: symbol("inset.filled.righthalf.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(2 / 3, "right")
+          }
+        },
+        {
+          key: "m",
+          label: "Maximize",
+          icon: symbol("inset.filled.rectangle"),
+          action: { kind: "callback", run: maximizeFocusedWindow }
+        },
+        {
+          key: ",",
+          label: "Center 2/3",
+          icon: symbol("inset.filled.center.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(2 / 3, "center")
+          }
+        },
+        {
+          key: ".",
+          label: "Center 1/2",
+          icon: symbol("inset.filled.rectangle.portrait"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(1 / 2, "center")
+          }
+        },
+        {
+          key: "H",
+          label: "Left 1/2",
+          icon: symbol("inset.filled.lefthalf.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(1 / 2, "left")
+          }
+        },
+        {
+          key: "L",
+          label: "Right 1/2",
+          icon: symbol("inset.filled.righthalf.rectangle"),
+          action: {
+            kind: "callback",
+            run: () => setWindowFrame(1 / 2, "right")
+          }
+        },
+        {
+          key: "f",
+          label: "Full screen",
+          icon: symbol("arrow.up.backward.and.arrow.down.forward.rectangle"),
+          action: { kind: "callback", run: toggleFullScreenFocusedWindow }
+        }
       ]
     }
   },
-  { key: "b", label: "Zen Browser", action: { kind: "app", bundleID: APP_BUNDLE_IDS.zenBrowser } },
+  {
+    key: "b",
+    label: "Zen Browser",
+    action: { kind: "app", bundleID: APP_BUNDLE_IDS.zenBrowser }
+  },
   {
     key: "f",
     label: "Hide others",
     icon: symbol("rectangle.and.hand.point.up.left"),
-    action: { kind: "url", url: "raycast://extensions/raycast/system/hide-all-apps-except-frontmost" }
+    action: {
+      kind: "url",
+      url: "raycast://extensions/raycast/system/hide-all-apps-except-frontmost"
+    }
   },
   {
     key: "s",
@@ -16812,11 +16936,40 @@ var menuTree = [
     action: {
       kind: "submenu",
       submenu: [
-        { key: "y", label: "Screenshot", icon: symbol("circle.rectangle.dashed"), action: { kind: "cmd", path: "/usr/sbin/screencapture", args: ["-ci"] } },
-        { key: "a", label: "Show app", icon: symbol("app.badge"), action: { kind: "url", url: "shottr://show" } },
-        { key: "s", label: "Area screenshot", icon: symbol("viewfinder"), action: { kind: "url", url: "shottr://grab/area?then=copy" } },
-        { key: "r", label: "repeat screenshot then edit", icon: symbol("viewfinder"), action: { kind: "url", url: "shottr://grab/repeat?then=edit" } },
-        { key: "w", label: "Window screenshot", icon: symbol("macwindow.badge.plus"), action: { kind: "url", url: "shottr://grab/window" } }
+        {
+          key: "y",
+          label: "Screenshot",
+          icon: symbol("circle.rectangle.dashed"),
+          action: {
+            kind: "cmd",
+            path: "/usr/sbin/screencapture",
+            args: ["-ci"]
+          }
+        },
+        {
+          key: "a",
+          label: "Show app",
+          icon: symbol("app.badge"),
+          action: { kind: "url", url: "shottr://show" }
+        },
+        {
+          key: "s",
+          label: "Area screenshot",
+          icon: symbol("viewfinder"),
+          action: { kind: "url", url: "shottr://grab/area?then=copy" }
+        },
+        {
+          key: "r",
+          label: "repeat screenshot then edit",
+          icon: symbol("viewfinder"),
+          action: { kind: "url", url: "shottr://grab/repeat?then=edit" }
+        },
+        {
+          key: "w",
+          label: "Window screenshot",
+          icon: symbol("macwindow.badge.plus"),
+          action: { kind: "url", url: "shottr://grab/window" }
+        }
       ]
     }
   },
@@ -16824,7 +16977,10 @@ var menuTree = [
     key: "e",
     label: "Pick emoji",
     icon: symbol("face.smiling"),
-    action: { kind: "url", url: "raycast://extensions/raycast/emoji-symbols/search-emoji-symbols" }
+    action: {
+      kind: "url",
+      url: "raycast://extensions/raycast/emoji-symbols/search-emoji-symbols"
+    }
   },
   {
     key: "E",
@@ -16877,8 +17033,24 @@ var menuTree = [
     action: {
       kind: "submenu",
       submenu: [
-        { key: "a", label: "Select space", icon: symbol("list.star"), action: { kind: "url", url: "raycast://extensions/the-browser-company/arc/search-spaces" } },
-        { key: "s", label: "Search tab", icon: symbol("filemenu.and.selection"), action: { kind: "url", url: "raycast://extensions/the-browser-company/arc/search-tabs" } },
+        {
+          key: "a",
+          label: "Select space",
+          icon: symbol("list.star"),
+          action: {
+            kind: "url",
+            url: "raycast://extensions/the-browser-company/arc/search-spaces"
+          }
+        },
+        {
+          key: "s",
+          label: "Search tab",
+          icon: symbol("filemenu.and.selection"),
+          action: {
+            kind: "url",
+            url: "raycast://extensions/the-browser-company/arc/search-tabs"
+          }
+        },
         {
           key: "t",
           label: "new tab",
@@ -16904,7 +17076,14 @@ var menuTree = [
           action: {
             kind: "submenu",
             submenu: [
-              { key: ",", label: "Play/Pause", action: { kind: "url", url: "raycast://extensions/fedevitaledev/music/toggle-play-pause" } }
+              {
+                key: ",",
+                label: "Play/Pause",
+                action: {
+                  kind: "url",
+                  url: "raycast://extensions/fedevitaledev/music/toggle-play-pause"
+                }
+              }
             ]
           }
         },
@@ -16912,19 +17091,28 @@ var menuTree = [
           key: "g",
           label: "View google cal event",
           icon: symbol("calendar"),
-          action: { kind: "url", url: "raycast://extensions/thomas/google-calendar/list-events" }
+          action: {
+            kind: "url",
+            url: "raycast://extensions/thomas/google-calendar/list-events"
+          }
         },
         {
           key: "x",
           label: "Tuxedo",
           icon: symbol("terminal"),
-          action: { kind: "callback", run: () => summon("tuxedo", "tuxedo") }
+          action: {
+            kind: "callback",
+            run: () => summon("tuxedo", "tuxedo")
+          }
         },
         {
           key: "n",
           label: "Nushell",
           icon: symbol("terminal"),
-          action: { kind: "callback", run: () => summon("nu", void 0, " --shell nu") }
+          action: {
+            kind: "callback",
+            run: () => summon("nu", void 0, " --shell nu")
+          }
         },
         {
           key: "y",
@@ -16932,7 +17120,11 @@ var menuTree = [
           icon: symbol("folder"),
           action: {
             kind: "callback",
-            run: () => summon("yazi", "yazi", " --cwd " + shellQuote(hs.fs.homeDirectory()))
+            run: () => summon(
+              "yazi",
+              "yazi",
+              " --cwd " + shellQuote(hs.fs.homeDirectory())
+            )
           }
         },
         {
@@ -16982,5 +17174,5 @@ var hotkeys = [
     null
   ),
   // LEADER MENU (Hyper+M) -- LeaderKey-style popup.
-  hs.hotkey.bind(hyper, "m", () => show(menuTree), null)
+  hs.hotkey.bind(hyper, "space", () => show(menuTree), null)
 ];

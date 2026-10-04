@@ -64,30 +64,50 @@ function showWindowChooser(windows: HSWindow[]): void {
 	c.onSelect = (choice) => {
 		if (!choice) return;
 		const win = windows[choice["winIndex"] as number];
-		if (win) focusWindow(win);
+		if (win) hs.timer.doAfter(0, () => focusWindow(win));
 	};
 	c.show();
 }
 
-async function onSelect(choice: Record<string, unknown> | null): Promise<void> {
+// Handles both "not running yet" and "running but with no standard window
+// open" (e.g. a menu-bar-only helper like 1Password) -- app.activate() on
+// an already-running, windowless app often doesn't surface anything, but
+// launchOrFocus() is documented to handle exactly this ("give it focus if
+// it's already running"). A cold launch can take a real amount of time,
+// long enough that something else (e.g. this chooser's own hide-triggered
+// "restore focus to the previously active window") reclaims focus before
+// it resolves, so a follow-up activate() once it's confirmed running
+// re-asserts focus for real.
+async function activateApp(bundleID: string): Promise<void> {
+	await hs.application.launchOrFocus(bundleID);
+	hs.application.matchingBundleID(bundleID)?.activate();
+}
+
+function onSelect(choice: Record<string, unknown> | null): void {
 	if (!choice) return;
 	const path = choice["path"] as string;
-	const bundleID = bundleIDForPath(path);
 
-	const app = bundleID ? hs.application.matchingBundleID(bundleID) : null;
-	if (!app) {
-		if (bundleID) await hs.application.launchOrFocus(bundleID);
-		return;
-	}
+	// Deferred: onSelect fires while the chooser is still in the middle of
+	// hiding (which itself restores focus to the previously active window),
+	// so activating/focusing a window -- or opening the window-count
+	// chooser below -- synchronously right here races that handoff. One
+	// tick later it's settled. Same issue as leader-menu.ts's selectOption()
+	// and emoji-picker.ts's onSelect().
+	hs.timer.doAfter(0, async () => {
+		const bundleID = bundleIDForPath(path);
+		if (!bundleID) return;
 
-	const windows = app.allWindows.filter((w) => w.isStandard);
-	if (windows.length === 0) {
-		app.activate();
-	} else if (windows.length === 1) {
-		focusWindow(windows[0]!);
-	} else {
-		showWindowChooser(windows);
-	}
+		const app = hs.application.matchingBundleID(bundleID);
+		const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
+
+		if (windows.length === 1) {
+			focusWindow(windows[0]!);
+		} else if (windows.length > 1) {
+			showWindowChooser(windows);
+		} else {
+			await activateApp(bundleID);
+		}
+	});
 }
 
 function scanApps(): AppChoice[] {
@@ -116,9 +136,7 @@ function scanApps(): AppChoice[] {
 }
 
 function ensureLoaded(): void {
-	console.log("here");
 	if (chooser) return;
-	console.log("here: after");
 	allChoices = scanApps();
 
 	chooser = hs.chooser.create();
@@ -126,7 +144,7 @@ function ensureLoaded(): void {
 	chooser.visibleRows = 9;
 	chooser.searchSubText = true;
 	chooser.placeholder = "Open or focus app…";
-	chooser.onSelect = (choice) => void onSelect(choice);
+	chooser.onSelect = onSelect;
 }
 
 export function show(): void {

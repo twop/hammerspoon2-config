@@ -69,6 +69,53 @@ const SPLIT_TRANSITION_DURATION = 0.22;
 const SLIDE_OFFSET_PX = 14;
 const SPLIT_GAP_PX = 24;
 
+// Every position in this file (screen frames, mouse event locations, the
+// rest/animation points below) is in ordinary Hammerspoon screen
+// coordinates: top-left origin, y increasing downward. hs.canvas's window
+// position -- create()/setFrame()/setTopLeft()/frame()/topLeft() -- is the
+// one exception: it uses unflipped AppKit screen coordinates (origin at
+// the bottom-left of the *primary* screen, y increasing upward; see
+// hs.canvas's own module-level "Coordinate systems" docs). These two
+// helpers are the only place that boundary gets crossed -- every other
+// call site stays in Hammerspoon coordinates.
+// Cached rather than looked up fresh on every call -- animateCanvas()'s
+// tick runs at 60fps, and a native hs.screen.primary() round-trip on every
+// single frame was visibly janking the position tween. Invalidated only
+// when the display configuration actually changes.
+let cachedPrimaryScreenHeight: number | null = null;
+hs.screen.on("change", () => {
+	cachedPrimaryScreenHeight = null;
+});
+
+function primaryScreenHeight(): number {
+	if (cachedPrimaryScreenHeight === null) {
+		cachedPrimaryScreenHeight = hs.screen.primary()!.fullFrame.h;
+	}
+	return cachedPrimaryScreenHeight;
+}
+
+// setTopLeft()/topLeft() exchange a single point, reflected across the
+// primary screen's full height -- self-inverse, so the same function
+// converts a Hammerspoon point to its canvas-window equivalent and back.
+function flipTopLeftY(point: { x: number; y: number }): { x: number; y: number } {
+	return { x: point.x, y: primaryScreenHeight() - point.y };
+}
+
+// create()/setFrame()/frame() exchange a whole rect anchored at its
+// *bottom*-left corner in AppKit's y-up space, unlike setTopLeft()'s
+// top-left point -- the height shifts which edge "y" refers to, so this
+// isn't just flipTopLeftY() again. Still self-inverse (applying it to an
+// already-AppKit-coordinate rect converts it back to Hammerspoon
+// coordinates), so it's also used to read canvas.frame() back.
+function flipFrameY(rect: { x: number; y: number; w: number; h: number }): {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+} {
+	return { x: rect.x, y: primaryScreenHeight() - rect.y - rect.h, w: rect.w, h: rect.h };
+}
+
 function nowMs(): number {
 	return hs.timer.absoluteTime() / 1e6;
 }
@@ -81,6 +128,11 @@ interface AnimateOpts {
 	fromPoint: { x: number; y: number };
 	toPoint: { x: number; y: number };
 	duration?: number;
+	// Called every tick with the same eased progress (0-1) driving the
+	// position tween, so a caller can layer in extra per-frame work (e.g.
+	// opacity -- see setPlaceholderOpacity()) on this same timer instead of
+	// running a second one alongside it.
+	onTick?: (eased: number) => void;
 	onComplete?: () => void;
 }
 
@@ -89,8 +141,9 @@ interface AnimateOpts {
 // Registered in animTimers so closeMenu() can stop it if the menu is torn
 // down mid-flight. v1 also faded alpha here (canvas:alpha()) -- HSCanvas
 // has no window-level alpha/opacity method in v2 (confirmed absent from
-// its full method list), so the reveal/enter animations are a position
-// slide only now, no fade-in.
+// its full method list), so a fade has to animate each element's own
+// fillColor/strokeColor alpha instead (via opts.onTick) rather than the
+// window itself.
 function animateCanvas(canvas: HSCanvas, opts: AnimateOpts): HSTimer | null {
 	const durationMs = (opts.duration ?? 0.15) * 1000;
 	const startMs = nowMs();
@@ -99,10 +152,13 @@ function animateCanvas(canvas: HSCanvas, opts: AnimateOpts): HSTimer | null {
 	const tick = (): boolean => {
 		const t = Math.min((nowMs() - startMs) / durationMs, 1);
 		const e = easeOutCubic(t);
-		canvas.setTopLeft({
-			x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
-			y: fromPoint.y + (toPoint.y - fromPoint.y) * e,
-		});
+		canvas.setTopLeft(
+			flipTopLeftY({
+				x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
+				y: fromPoint.y + (toPoint.y - fromPoint.y) * e,
+			}),
+		);
+		opts.onTick?.(e);
 		return t >= 1;
 	};
 
@@ -277,7 +333,16 @@ function selectOption(opt: MenuItem, breadcrumb: string[]): void {
 		}
 		case "app":
 			closeMenu("app launched");
-			void hs.application.launchOrFocus(action.bundleID);
+			// Deferred, and with a follow-up activate() once it's confirmed
+			// running -- same reasoning (and the same fix) as app-picker.ts's
+			// activateApp(): a cold launch can take long enough that whatever
+			// reclaims focus in the meantime (closing this menu's own canvas is
+			// itself a focus-adjacent event) ends up on top once launchOrFocus()
+			// actually resolves, leaving the app launched but not frontmost.
+			hs.timer.doAfter(0, async () => {
+				await hs.application.launchOrFocus(action.bundleID);
+				hs.application.matchingBundleID(action.bundleID)?.activate();
+			});
 			break;
 		case "cmd":
 			closeMenu("cmd started");
@@ -325,7 +390,7 @@ function menuRestTopLeft(w: number, h: number): { x: number; y: number } {
 
 function buildPlaceholderCanvas(topLeft: { x: number; y: number }): HSCanvas {
 	const size = Theme.placeholderCanvasSize;
-	const c = hs.canvas.create({ x: topLeft.x, y: topLeft.y, w: size, h: size });
+	const c = hs.canvas.create(flipFrameY({ x: topLeft.x, y: topLeft.y, w: size, h: size }));
 	c.appendElements([
 		{
 			type: "circle",
@@ -355,16 +420,28 @@ function buildPlaceholderCanvas(topLeft: { x: number; y: number }): HSCanvas {
 	return c;
 }
 
+// HSCanvas has no window-level alpha, so "fading" the placeholder means
+// scaling each of its 3 elements' own fillColor/strokeColor alpha by
+// `factor` -- indices and base alphas mirror buildPlaceholderCanvas()'s
+// appendElements() above exactly.
+function setPlaceholderOpacity(c: HSCanvas, factor: number): void {
+	c.setElementAttribute(0, "fillColor", canvasColor(Theme.background, Theme.backgroundAlpha * factor));
+	c.setElementAttribute(1, "strokeColor", canvasColor(Theme.border, factor));
+	c.setElementAttribute(2, "fillColor", canvasColor(Theme.border, factor));
+}
+
 function showPlaceholderInitial(): void {
 	const rest = placeholderRestTopLeft("screen");
 	const start = { x: rest.x, y: rest.y + SLIDE_OFFSET_PX };
 	const c = buildPlaceholderCanvas(start);
+	setPlaceholderOpacity(c, 0);
 	c.show();
 	placeholderCanvas = c;
 	animateCanvas(c, {
 		fromPoint: start,
 		toPoint: rest,
 		duration: PLACEHOLDER_ENTER_DURATION,
+		onTick: (e) => setPlaceholderOpacity(c, e),
 	});
 }
 
@@ -376,7 +453,7 @@ function revealMenu(): void {
 	if (placeholderCanvas) {
 		const leftRest = placeholderRestTopLeft("left");
 		animateCanvas(placeholderCanvas, {
-			fromPoint: placeholderCanvas.topLeft() as { x: number; y: number },
+			fromPoint: flipTopLeftY(placeholderCanvas.topLeft() as { x: number; y: number }),
 			toPoint: leftRest,
 			duration: SPLIT_TRANSITION_DURATION,
 		});
@@ -406,7 +483,7 @@ function renderMenu(
 	const restTopLeft = menuRestTopLeft(w, h);
 	const { x, y } = restTopLeft;
 
-	const c = hs.canvas.create({ x, y, w, h });
+	const c = hs.canvas.create(flipFrameY({ x, y, w, h }));
 	c.appendElements([
 		{
 			type: "rectangle",
@@ -559,7 +636,7 @@ function renderMenu(
 	if (opts.entering) {
 		const restPos = { x, y };
 		const startPos = { x, y: y + SLIDE_OFFSET_PX };
-		c.setTopLeft(startPos);
+		c.setTopLeft(flipTopLeftY(startPos));
 		c.show();
 		animateCanvas(c, {
 			fromPoint: startPos,
@@ -584,22 +661,18 @@ function bindKeys(options: MenuItem[], breadcrumb: string[]): void {
 		(event) => {
 			armRevealTimer();
 
+			// "escape"/"delete" are control keys with no useful .characters value,
+			// so those two stay identified by name via the keyCode->name reverse
+			// lookup in hs.keycodes.map.
 			const codeMap = hs.keycodes.map as Record<string, unknown>;
-			let pressed = String(codeMap[String(event.keyCode)] ?? "");
-			if (
-				event.flags.includes("shift") &&
-				pressed.length === 1 &&
-				/[a-z]/i.test(pressed)
-			) {
-				pressed = pressed.toUpperCase();
-			}
+			const keyName = String(codeMap[String(event.keyCode)] ?? "");
 
-			if (pressed === "escape") {
+			if (keyName === "escape") {
 				closeMenu("esc pressed");
 				return hs.eventtap.consume;
 			}
 
-			if (pressed === "delete") {
+			if (keyName === "delete") {
 				if (stack.length <= 1) {
 					closeMenu("backspace at root");
 				} else {
@@ -611,6 +684,13 @@ function bindKeys(options: MenuItem[], breadcrumb: string[]): void {
 				return hs.eventtap.consume;
 			}
 
+			// Every other binding matches against the actual Unicode text this
+			// keypress produces -- shift and keyboard layout already applied by
+			// the OS. Far more reliable than reverse-mapping keyCode through
+			// hs.keycodes.map and hand-rolling a shift-to-uppercase hack, which
+			// only ever covered plain a-z letters and silently never matched
+			// punctuation keys like "/", "," or ".".
+			const pressed = event.characters ?? "";
 			for (const opt of options) {
 				if (pressed === opt.key) {
 					selectOption(opt, breadcrumb);
@@ -636,7 +716,10 @@ function bindKeys(options: MenuItem[], breadcrumb: string[]): void {
 
 function withinCanvas(point: { x: number; y: number }): boolean {
 	if (!canvas) return false;
-	const f = canvas.frame() as { x: number; y: number; w: number; h: number };
+	// canvas.frame() comes back in AppKit coordinates; point (a mouse event
+	// location) is in Hammerspoon coordinates -- flipFrameY() is self-inverse,
+	// so it converts the frame back rather than the Hammerspoon rect forward.
+	const f = flipFrameY(canvas.frame() as { x: number; y: number; w: number; h: number });
 	return (
 		point.x >= f.x &&
 		point.x <= f.x + f.w &&
