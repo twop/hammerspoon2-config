@@ -1,9 +1,13 @@
 // The Hyper+M menu tree itself. Port of leader-menu-config.lua --
 // leader-menu.ts is the generic engine; this file is its only consumer.
 //
-// Icons are Nerd Font glyphs, same as v1 (no SF Symbols support here
-// either) -- built with String.fromCodePoint() instead of v1's
-// hs.utf8.codepointToUTF8 (no hs.utf8 module in v2; plain JS covers it).
+// Icons are SF Symbols (via HSImage.fromSymbol()), matching the real
+// Leader Key app's config (~/work/dotfiles/leader_key/config.json,
+// "iconPath" per action) that this tree is itself a port of -- symbol()
+// below just looks each one up by the same name. v2-only items this port
+// added beyond that original tree (the "/" app picker, "p" process
+// explorer, most of "u" Utilities) have no iconPath to carry over, so
+// their symbol names are this port's own pick.
 //
 // v2's hs.application.launchOrFocus() takes a bundle ID, not a `.app`
 // path (unlike hs.image.iconForFile(), which still wants a path, and is
@@ -23,8 +27,8 @@ import * as Term from "./termview";
 import * as ZellijMenu from "./zellij-menu";
 import type { MenuItem } from "./leader-menu";
 
-function icon(codepoint: number): string {
-  return String.fromCodePoint(codepoint);
+function symbol(name: string): HSImage {
+  return HSImage.fromSymbol(name)!;
 }
 
 const APP_BUNDLE_IDS = {
@@ -101,20 +105,20 @@ export const menuTree: MenuItem[] = [
   {
     key: "r",
     label: "Resize window",
-    icon: icon(0xf009), // th-large
+    icon: symbol("rectangle.split.3x3.fill"),
     action: {
       kind: "submenu",
       submenu: [
-        { key: "h", label: "Left 1/3", icon: "?", action: { kind: "callback", run: () => setWindowFrame(1 / 3, "left") } },
-        { key: "l", label: "Right 1/3", icon: "?", action: { kind: "callback", run: () => setWindowFrame(1 / 3, "right") } },
-        { key: "j", label: "Left 2/3", icon: "?", action: { kind: "callback", run: () => setWindowFrame(2 / 3, "left") } },
-        { key: "k", label: "Right 2/3", icon: "?", action: { kind: "callback", run: () => setWindowFrame(2 / 3, "right") } },
-        { key: "m", label: "Maximize", icon: icon(0xf2d0), action: { kind: "callback", run: maximizeFocusedWindow } },
-        { key: ",", label: "Center 2/3", icon: "?", action: { kind: "callback", run: () => setWindowFrame(2 / 3, "center") } },
-        { key: ".", label: "Center 1/2", icon: "?", action: { kind: "callback", run: () => setWindowFrame(1 / 2, "center") } },
-        { key: "H", label: "Left 1/2", icon: "?", action: { kind: "callback", run: () => setWindowFrame(1 / 2, "left") } },
-        { key: "L", label: "Right 1/2", icon: "?", action: { kind: "callback", run: () => setWindowFrame(1 / 2, "right") } },
-        { key: "f", label: "Full screen", icon: icon(0xf065), action: { kind: "callback", run: toggleFullScreenFocusedWindow } },
+        { key: "h", label: "Left 1/3", icon: symbol("inset.filled.leftthird.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 3, "left") } },
+        { key: "l", label: "Right 1/3", icon: symbol("inset.filled.trailingthird.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 3, "right") } },
+        { key: "j", label: "Left 2/3", icon: symbol("inset.filled.lefthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(2 / 3, "left") } },
+        { key: "k", label: "Right 2/3", icon: symbol("inset.filled.righthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(2 / 3, "right") } },
+        { key: "m", label: "Maximize", icon: symbol("inset.filled.rectangle"), action: { kind: "callback", run: maximizeFocusedWindow } },
+        { key: ",", label: "Center 2/3", icon: symbol("inset.filled.center.rectangle"), action: { kind: "callback", run: () => setWindowFrame(2 / 3, "center") } },
+        { key: ".", label: "Center 1/2", icon: symbol("inset.filled.rectangle.portrait"), action: { kind: "callback", run: () => setWindowFrame(1 / 2, "center") } },
+        { key: "H", label: "Left 1/2", icon: symbol("inset.filled.lefthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 2, "left") } },
+        { key: "L", label: "Right 1/2", icon: symbol("inset.filled.righthalf.rectangle"), action: { kind: "callback", run: () => setWindowFrame(1 / 2, "right") } },
+        { key: "f", label: "Full screen", icon: symbol("arrow.up.backward.and.arrow.down.forward.rectangle"), action: { kind: "callback", run: toggleFullScreenFocusedWindow } },
       ],
     },
   },
@@ -124,22 +128,22 @@ export const menuTree: MenuItem[] = [
   {
     key: "f",
     label: "Hide others",
-    icon: icon(0xf0a6), // hand-o-up
+    icon: symbol("rectangle.and.hand.point.up.left"),
     action: { kind: "url", url: "raycast://extensions/raycast/system/hide-all-apps-except-frontmost" },
   },
 
   {
     key: "s",
     label: "Screenshots",
-    icon: icon(0xf030), // camera
+    icon: symbol("camera"),
     action: {
       kind: "submenu",
       submenu: [
-        { key: "y", label: "Screenshot", icon: icon(0xf030), action: { kind: "cmd", path: "/usr/sbin/screencapture", args: ["-ci"] } },
-        { key: "a", label: "Show app", icon: "?", action: { kind: "url", url: "shottr://show" } },
-        { key: "s", label: "Area screenshot", icon: icon(0xf125), action: { kind: "url", url: "shottr://grab/area?then=copy" } },
-        { key: "r", label: "repeat screenshot then edit", icon: icon(0xf125), action: { kind: "url", url: "shottr://grab/repeat?then=edit" } },
-        { key: "w", label: "Window screenshot", icon: icon(0xf2d2), action: { kind: "url", url: "shottr://grab/window" } },
+        { key: "y", label: "Screenshot", icon: symbol("circle.rectangle.dashed"), action: { kind: "cmd", path: "/usr/sbin/screencapture", args: ["-ci"] } },
+        { key: "a", label: "Show app", icon: symbol("app.badge"), action: { kind: "url", url: "shottr://show" } },
+        { key: "s", label: "Area screenshot", icon: symbol("viewfinder"), action: { kind: "url", url: "shottr://grab/area?then=copy" } },
+        { key: "r", label: "repeat screenshot then edit", icon: symbol("viewfinder"), action: { kind: "url", url: "shottr://grab/repeat?then=edit" } },
+        { key: "w", label: "Window screenshot", icon: symbol("macwindow.badge.plus"), action: { kind: "url", url: "shottr://grab/window" } },
       ],
     },
   },
@@ -147,21 +151,21 @@ export const menuTree: MenuItem[] = [
   {
     key: "e",
     label: "Pick emoji",
-    icon: icon(0xf118), // smile-o
+    icon: symbol("face.smiling"),
     action: { kind: "url", url: "raycast://extensions/raycast/emoji-symbols/search-emoji-symbols" },
   },
 
   {
     key: "E",
     label: "Pick emoji (native)",
-    icon: icon(0xf118),
+    icon: symbol("face.smiling"),
     action: { kind: "callback", run: () => EmojiPicker.show() },
   },
 
   {
     key: "d",
     label: "Apps",
-    icon: icon(0xf108), // desktop
+    icon: symbol("macwindow"),
     action: {
       kind: "submenu",
       submenu: [
@@ -180,38 +184,39 @@ export const menuTree: MenuItem[] = [
   {
     key: "m",
     label: "Search menu items",
-    icon: icon(0xf0c9), // bars
+    icon: symbol("menucard"),
     action: { kind: "callback", run: () => MenuItemSearch.show() },
   },
 
   {
     key: "/",
     label: "Open or focus app",
-    icon: icon(0xf002), // search
+    icon: symbol("magnifyingglass"),
     action: { kind: "callback", run: () => AppPicker.show() },
   },
 
   {
     key: "p",
     label: "Process explorer",
-    icon: icon(0xf0e8), // sitemap
+    icon: symbol("cpu"),
     action: { kind: "callback", run: () => void ProcessExplorer.show() },
   },
 
   {
     key: "a",
     label: "Arc actions",
-    icon: icon(0xf005), // star (no bundle icon lookup here, unlike v1's hs.image.iconForFile(path) -- v2's icon
-    // path needs the resolved .app path, which this config doesn't look up for icon-only purposes
+    // Real app icon, matching the original Leader Key config's iconPath
+    // (a plain .app path there resolves to the app's own icon).
+    icon: HSImage.fromAppBundle(APP_BUNDLE_IDS.arc) ?? undefined,
     action: {
       kind: "submenu",
       submenu: [
-        { key: "a", label: "Select space", icon: icon(0xf005), action: { kind: "url", url: "raycast://extensions/the-browser-company/arc/search-spaces" } },
-        { key: "s", label: "Search tab", icon: icon(0xf002), action: { kind: "url", url: "raycast://extensions/the-browser-company/arc/search-tabs" } },
+        { key: "a", label: "Select space", icon: symbol("list.star"), action: { kind: "url", url: "raycast://extensions/the-browser-company/arc/search-spaces" } },
+        { key: "s", label: "Search tab", icon: symbol("filemenu.and.selection"), action: { kind: "url", url: "raycast://extensions/the-browser-company/arc/search-tabs" } },
         {
           key: "t",
           label: "new tab",
-          icon: icon(0xf0fe),
+          icon: symbol("plus.square.fill.on.square.fill"),
           action: {
             kind: "url",
             url: "raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D",
@@ -224,7 +229,7 @@ export const menuTree: MenuItem[] = [
   {
     key: "u",
     label: "Utilities",
-    icon: icon(0xf141), // ellipsis-h
+    icon: symbol("ellipsis"),
     action: {
       kind: "submenu",
       submenu: [
@@ -241,25 +246,25 @@ export const menuTree: MenuItem[] = [
         {
           key: "g",
           label: "View google cal event",
-          icon: icon(0xf073), // calendar
+          icon: symbol("calendar"),
           action: { kind: "url", url: "raycast://extensions/thomas/google-calendar/list-events" },
         },
         {
           key: "x",
           label: "Tuxedo",
-          icon: icon(0xf120), // terminal
+          icon: symbol("terminal"),
           action: { kind: "callback", run: () => Term.summon("tuxedo", "tuxedo") },
         },
         {
           key: "n",
           label: "Nushell",
-          icon: icon(0xf120),
+          icon: symbol("terminal"),
           action: { kind: "callback", run: () => Term.summon("nu", undefined, " --shell nu") },
         },
         {
           key: "y",
           label: "Yazi",
-          icon: icon(0xf120),
+          icon: symbol("folder"),
           action: {
             kind: "callback",
             run: () => Term.summon("yazi", "yazi", " --cwd " + Term.shellQuote(hs.fs.homeDirectory())),
@@ -268,7 +273,7 @@ export const menuTree: MenuItem[] = [
         {
           key: "h",
           label: "Find file (Helix)",
-          icon: icon(0xf120),
+          icon: symbol("doc.text.magnifyingglass"),
           action: {
             kind: "callback",
             run: () => {
@@ -285,13 +290,13 @@ export const menuTree: MenuItem[] = [
         {
           key: "d",
           label: "Daily note",
-          icon: icon(0xf120),
+          icon: symbol("note.text"),
           action: { kind: "callback", run: openDailyNote },
         },
         {
           key: "r",
           label: "Reload config",
-          icon: icon(0xf021), // refresh
+          icon: symbol("arrow.clockwise"),
           action: { kind: "callback", run: () => hs.reload() },
         },
       ],

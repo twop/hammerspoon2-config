@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "types": []
   },
-  "include": ["*.ts", "hammerspoon.d.ts"]
+  "include": ["*.ts", "*.d.ts"]
 }

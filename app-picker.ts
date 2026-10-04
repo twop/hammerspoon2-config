@@ -116,7 +116,9 @@ function scanApps(): AppChoice[] {
 }
 
 function ensureLoaded(): void {
+	console.log("here");
 	if (chooser) return;
+	console.log("here: after");
 	allChoices = scanApps();
 
 	chooser = hs.chooser.create();
