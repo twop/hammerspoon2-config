@@ -1,0 +1,17 @@
+{
+  "name": "hammerspoon2-config",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Third-party JS libraries for Hammerspoon 2.\nRun `npm run bundle` after adding packages with `npm install <package>`.",
+  "dependencies": {},
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.0"
+  },
+  "scripts": {
+    "build": "esbuild init.ts --bundle --platform=neutral --format=esm --target=esnext --outfile=init.js",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit",
+    "bundle": "node bundle.js"
+  }
+}
