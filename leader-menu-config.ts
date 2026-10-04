@@ -42,6 +42,8 @@ const APP_BUNDLE_IDS = {
 	bear: "net.shinyfrog.bear",
 	onePassword: "com.1password.1password",
 	zenBrowser: "app.zen-browser.zen",
+	elegooSlicer: "com.elegoo3d.elegoo-slicer",
+	freeCAD: "org.freecad.FreeCAD",
 } as const;
 
 function appItem(key: string, label: string, bundleID: string): MenuItem {
@@ -317,6 +319,8 @@ export const menuTree: MenuItem[] = [
 				appItem("s", "Safari", APP_BUNDLE_IDS.safari),
 				appItem("b", "Bear", APP_BUNDLE_IDS.bear),
 				appItem("p", "1Password", APP_BUNDLE_IDS.onePassword),
+				appItem("e", "ElegooSlicer", APP_BUNDLE_IDS.elegooSlicer),
+				appItem("c", "FreeCAD", APP_BUNDLE_IDS.freeCAD),
 			],
 		},
 	},

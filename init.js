@@ -16776,7 +16776,9 @@ var APP_BUNDLE_IDS = {
   safari: "com.apple.Safari",
   bear: "net.shinyfrog.bear",
   onePassword: "com.1password.1password",
-  zenBrowser: "app.zen-browser.zen"
+  zenBrowser: "app.zen-browser.zen",
+  elegooSlicer: "com.elegoo3d.elegoo-slicer",
+  freeCAD: "org.freecad.FreeCAD"
 };
 function appItem(key, label, bundleID) {
   return { key, label, action: { kind: "app", bundleID } };
@@ -17008,7 +17010,9 @@ var menuTree = [
         appItem("m", "Messages", APP_BUNDLE_IDS.messages),
         appItem("s", "Safari", APP_BUNDLE_IDS.safari),
         appItem("b", "Bear", APP_BUNDLE_IDS.bear),
-        appItem("p", "1Password", APP_BUNDLE_IDS.onePassword)
+        appItem("p", "1Password", APP_BUNDLE_IDS.onePassword),
+        appItem("e", "ElegooSlicer", APP_BUNDLE_IDS.elegooSlicer),
+        appItem("c", "FreeCAD", APP_BUNDLE_IDS.freeCAD)
       ]
     }
   },
