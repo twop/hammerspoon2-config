@@ -405,7 +405,6 @@ function buildChoices(query: string): Record<string, unknown>[] {
 		subText: buildSubText(entry),
 		image: rowImage(entry),
 		index,
-		options: entryOptions(entry),
 	}));
 }
 
@@ -435,7 +434,10 @@ function ensureLoaded(): void {
 	chooser.textColor = chooserColor(Theme.text);
 	chooser.subTextColor = chooserColor(Theme.textDim);
 	chooser.setChoices(buildChoices);
-	attachOptionsBar(chooser);
+	attachOptionsBar(chooser, (row) => {
+		const entry = history[row["index"] as number];
+		return entry ? entryOptions(entry) : undefined;
+	});
 }
 
 export function show(): void {

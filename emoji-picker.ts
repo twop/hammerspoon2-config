@@ -30,7 +30,6 @@ interface EmojiChoice {
 	subText?: string;
 	char: string;
 	image: HSImage | null;
-	options: ChoiceOption[];
 }
 
 // Legend for the options bar: Enter/click is the chooser's own native
@@ -134,7 +133,6 @@ function loadDataset(): EmojiChoice[] {
 		subText: meta.group,
 		char,
 		image: emojiImage(char),
-		options: emojiOptions(char),
 	}));
 }
 
@@ -152,7 +150,7 @@ function ensureLoaded(): void {
 	chooser.cornerRadius = Theme.cornerRadius;
 	chooser.textColor = chooserColor(Theme.text);
 	chooser.subTextColor = chooserColor(Theme.textDim);
-	attachOptionsBar(chooser);
+	attachOptionsBar(chooser, (row) => emojiOptions(row["char"] as string));
 }
 
 // Pins the top FREQUENT_PIN_COUNT most-picked emoji (count > 0) to the

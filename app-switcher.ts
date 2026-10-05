@@ -12,7 +12,6 @@ interface AppChoice {
 	subText: string;
 	bundleID: string;
 	image: HSImage | null;
-	options: ChoiceOption[];
 }
 
 let chooser: HSChooser | null = null;
@@ -63,7 +62,6 @@ function listRunningApps(): AppChoice[] {
 			subText: app.bundleID,
 			bundleID: app.bundleID,
 			image: HSImage.fromAppBundle(app.bundleID),
-			options: optionsFor(app),
 		});
 	}
 	choices.sort((a, b) => a.text.localeCompare(b.text));
@@ -99,7 +97,10 @@ function ensureLoaded(): void {
 	chooser.searchSubText = true;
 	chooser.placeholder = "Switch to app…";
 	chooser.onSelect = onSelect;
-	attachOptionsBar(chooser);
+	attachOptionsBar(chooser, (row) => {
+		const app = hs.application.matchingBundleID(row["bundleID"] as string);
+		return app ? optionsFor(app) : undefined;
+	});
 }
 
 export function show(): void {

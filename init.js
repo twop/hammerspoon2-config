@@ -16314,10 +16314,25 @@ function genericMods(flags) {
 function modsMatch(required, present) {
   return required.length === present.size && required.every((m) => present.has(m));
 }
+var CONTROL_KEYCODES = {
+  return: 36,
+  tab: 48,
+  space: 49,
+  delete: 51,
+  escape: 53
+};
+function keyMatches(optKey, event, keyName) {
+  const controlCode = CONTROL_KEYCODES[optKey];
+  if (controlCode !== void 0) return event.keyCode === controlCode;
+  if (optKey === keyName) return true;
+  return event.characters === optKey;
+}
 function chipGlyph(opt) {
-  if (opt.mods && opt.key)
-    return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
+  if (opt.mods && opt.key) return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
   return opt.keyGlyph ?? "";
+}
+function cornerRadii(r) {
+  return { xRadius: r, yRadius: r };
 }
 function barRect(width) {
   const sf = hs.screen.primary().frame;
@@ -16330,34 +16345,23 @@ function barRect(width) {
 }
 function rulerElements() {
   return [
-    {
-      type: "text",
-      text: "",
-      textWeight: "bold",
-      textSize: Theme.fontSize,
-      frame: { x: 0, y: 0, w: 1, h: 1 }
-    },
-    {
-      type: "text",
-      text: "",
-      textSize: Theme.fontSize,
-      frame: { x: 0, y: 0, w: 1, h: 1 }
-    }
+    { type: "text", text: "", textWeight: "bold", textSize: Theme.fontSize, frame: { x: 0, y: 0, w: 1, h: 1 } },
+    { type: "text", text: "", textSize: Theme.fontSize, frame: { x: 0, y: 0, w: 1, h: 1 } }
   ];
+}
+function backgroundElement() {
+  return {
+    type: "rectangle",
+    action: "strokeAndFill",
+    fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
+    strokeColor: canvasColor(Theme.border),
+    strokeWidth: Theme.borderWidth,
+    roundedRectRadii: cornerRadii(Theme.cornerRadius)
+  };
 }
 function buildBarCanvas() {
   const c = hs.canvas.create(flipFrameY(barRect(200)));
-  c.appendElements([
-    ...rulerElements(),
-    {
-      type: "rectangle",
-      action: "strokeAndFill",
-      fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
-      strokeColor: canvasColor(Theme.border),
-      strokeWidth: Theme.borderWidth,
-      roundedRectRadii: Theme.cornerRadius
-    }
-  ]);
+  c.appendElements([...rulerElements(), backgroundElement()]);
   c.levelValue(hs.canvas.windowLevels["overlay"]);
   c.clickActivating(false);
   return c;
@@ -16373,20 +16377,10 @@ function render(bar, options) {
     return { opt, glyph, chipW, labelW: labelSize.w, pairW };
   });
   const contentW = segments.reduce((sum, s) => sum + s.pairW, 0) + Math.max(0, segments.length - 1) * PAIR_GAP;
-  const maxW = hs.screen.primary()?.frame?.w * 0.9;
+  const maxW = hs.screen.primary().frame.w * 0.9;
   const barWidth = Math.min(contentW + Theme.paddingX * 2, maxW);
   bar.setFrame(flipFrameY(barRect(barWidth)));
-  const elements = [
-    ...rulerElements(),
-    {
-      type: "rectangle",
-      action: "strokeAndFill",
-      fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
-      strokeColor: canvasColor(Theme.border),
-      strokeWidth: Theme.borderWidth,
-      roundedRectRadii: Theme.cornerRadius
-    }
-  ];
+  const elements = [...rulerElements(), backgroundElement()];
   const chipY = (BAR_HEIGHT - CHIP_HEIGHT) / 2;
   const labelY = (BAR_HEIGHT - rowTextH) / 2;
   let x = Theme.paddingX;
@@ -16396,7 +16390,7 @@ function render(bar, options) {
         type: "rectangle",
         action: "fill",
         fillColor: canvasColor(Theme.surface),
-        roundedRectRadii: Theme.keyChipRadius,
+        roundedRectRadii: cornerRadii(Theme.keyChipRadius),
         frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
       });
       elements.push({
@@ -16423,7 +16417,7 @@ function render(bar, options) {
   bar.replaceElements(elements);
   bar.show();
 }
-function attachOptionsBar(chooser6) {
+function attachOptionsBar(chooser6, getOptionsForRow) {
   let bar = null;
   let pollTimer = null;
   let tap2 = null;
@@ -16442,27 +16436,17 @@ function attachOptionsBar(chooser6) {
     const row = chooser6.selectedRowContents(null);
     if (row === lastRow) return;
     lastRow = row;
-    currentOptions = row?.options;
+    currentOptions = row ? getOptionsForRow(row) : void 0;
     renderCurrent();
   }
   function onKeyDown(event) {
-    console.log(
-      `[chooser-options-bar] keyDown keyCode=${event.keyCode} flags=${JSON.stringify(event.flags)} hasOptions=${!!currentOptions} count=${currentOptions?.length ?? 0}`
-    );
     if (!currentOptions) return hs.eventtap.emit;
     const codeMap = hs.keycodes.map;
     const keyName = String(codeMap[String(event.keyCode)] ?? "");
     const flags = genericMods(event.flags);
-    console.log(
-      `[chooser-options-bar] keyName=${keyName} genericFlags=${JSON.stringify([...flags])}`
-    );
     for (const opt of currentOptions) {
       if (!opt.key || !opt.run) continue;
-      console.log(
-        `[chooser-options-bar] checking option key=${opt.key} mods=${JSON.stringify(opt.mods)}`
-      );
-      if (opt.key === keyName && modsMatch(opt.mods ?? [], flags)) {
-        console.log(`[chooser-options-bar] MATCH -- running action`);
+      if (keyMatches(opt.key, event, keyName) && modsMatch(opt.mods ?? [], flags)) {
         opt.run();
         return hs.eventtap.consume;
       }
@@ -16475,7 +16459,6 @@ function attachOptionsBar(chooser6) {
     pollTimer = hs.timer.create(POLL_INTERVAL_SECONDS, tick);
     pollTimer.start();
     tap2 = hs.eventtap.addWatcher([KEY_DOWN2], onKeyDown, false);
-    console.log(`[chooser-options-bar] tap created: ${tap2 !== null}`);
     tap2?.start();
   };
   chooser6.onHide = () => {
@@ -16557,8 +16540,7 @@ function loadDataset() {
     text: meta.name,
     subText: meta.group,
     char,
-    image: emojiImage(char),
-    options: emojiOptions(char)
+    image: emojiImage(char)
   }));
 }
 function ensureLoaded() {
@@ -16574,7 +16556,7 @@ function ensureLoaded() {
   chooser.cornerRadius = Theme.cornerRadius;
   chooser.textColor = chooserColor(Theme.text);
   chooser.subTextColor = chooserColor(Theme.textDim);
-  attachOptionsBar(chooser);
+  attachOptionsBar(chooser, (row) => emojiOptions(row["char"]));
 }
 function buildRankedChoices() {
   const freq = loadFrequency();
@@ -16793,8 +16775,7 @@ function listRunningApps() {
       text: app.title,
       subText: app.bundleID,
       bundleID: app.bundleID,
-      image: HSImage.fromAppBundle(app.bundleID),
-      options: optionsFor(app)
+      image: HSImage.fromAppBundle(app.bundleID)
     });
   }
   choices.sort((a, b) => a.text.localeCompare(b.text));
@@ -16823,7 +16804,10 @@ function ensureLoaded4() {
   chooser4.searchSubText = true;
   chooser4.placeholder = "Switch to app\u2026";
   chooser4.onSelect = onSelect3;
-  attachOptionsBar(chooser4);
+  attachOptionsBar(chooser4, (row) => {
+    const app = hs.application.matchingBundleID(row["bundleID"]);
+    return app ? optionsFor(app) : void 0;
+  });
 }
 function show5() {
   ensureLoaded4();
@@ -17119,8 +17103,7 @@ function buildChoices(query) {
     text: rowTitle(entry),
     subText: buildSubText(entry),
     image: rowImage(entry),
-    index,
-    options: entryOptions(entry)
+    index
   }));
 }
 function onSelect4(choice, previouslyFocused) {
@@ -17145,7 +17128,10 @@ function ensureLoaded5() {
   chooser5.textColor = chooserColor(Theme.text);
   chooser5.subTextColor = chooserColor(Theme.textDim);
   chooser5.setChoices(buildChoices);
-  attachOptionsBar(chooser5);
+  attachOptionsBar(chooser5, (row) => {
+    const entry = history[row["index"]];
+    return entry ? entryOptions(entry) : void 0;
+  });
 }
 function show6() {
   ensureLoaded5();
