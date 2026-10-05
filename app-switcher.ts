@@ -4,21 +4,48 @@
 // unlike app-picker.ts's cached allChoices, is rebuilt fresh on every
 // show() since the running-app set changes constantly.
 
-import {
-	styleChooser,
-	focusWindow,
-	showWindowChooser,
-	activateApp,
-} from "./app-picker";
+import { styleChooser, focusWindow, showWindowChooser, activateApp } from "./app-picker";
+import { attachOptionsBar, type ChoiceOption } from "./chooser-options-bar";
 
 interface AppChoice {
 	text: string;
 	subText: string;
 	bundleID: string;
 	image: HSImage | null;
+	options: ChoiceOption[];
 }
 
 let chooser: HSChooser | null = null;
+
+// ⌘Q/⌘H on the currently-highlighted row -- demonstrates chooser-options-bar.ts.
+// Resolved fresh at fire time rather than closing over `app` directly, matching
+// this file's and app-picker.ts's existing "resolved fresh" convention.
+// Called only from listRunningApps(), which already filters out apps with
+// no bundleID -- the assertion below just reflects that.
+function optionsFor(app: HSApplication): ChoiceOption[] {
+	const bundleID = app.bundleID!;
+	const name = app.title ?? bundleID;
+	return [
+		{
+			mods: ["cmd"],
+			key: "q",
+			label: `Quit ${name}`,
+			run: () => {
+				hs.application.matchingBundleID(bundleID)?.kill();
+				chooser?.hide();
+			},
+		},
+		{
+			mods: ["cmd"],
+			key: "h",
+			label: `Hide ${name}`,
+			run: () => {
+				hs.application.matchingBundleID(bundleID)?.hide();
+				chooser?.hide();
+			},
+		},
+	];
+}
 
 // Only Dock-visible ("standard") apps, matching leader-menu-config.ts's own
 // hideOtherApps() filter -- and excludes whichever app was frontmost when
@@ -36,6 +63,7 @@ function listRunningApps(): AppChoice[] {
 			subText: app.bundleID,
 			bundleID: app.bundleID,
 			image: HSImage.fromAppBundle(app.bundleID),
+			options: optionsFor(app),
 		});
 	}
 	choices.sort((a, b) => a.text.localeCompare(b.text));
@@ -71,6 +99,7 @@ function ensureLoaded(): void {
 	chooser.searchSubText = true;
 	chooser.placeholder = "Switch to app…";
 	chooser.onSelect = onSelect;
+	attachOptionsBar(chooser);
 }
 
 export function show(): void {

@@ -16,6 +16,7 @@
 
 import { Theme, chooserColor } from "./nord-theme";
 import emojiData from "unicode-emoji-json/data-by-emoji.json";
+import { attachOptionsBar, type ChoiceOption } from "./chooser-options-bar";
 
 const FREQUENCY_KEY = "emojiPicker.frequency";
 const FREQUENT_PIN_COUNT = 12; // how many top-frequency emoji get pinned to the top
@@ -29,6 +30,28 @@ interface EmojiChoice {
 	subText?: string;
 	char: string;
 	image: HSImage | null;
+	options: ChoiceOption[];
+}
+
+// Legend for the options bar: Enter/click is the chooser's own native
+// select behavior (paste), shown here display-only since it's not a
+// shortcut this file intercepts -- ⌘⇧C is the one real addition, copying
+// without pasting (and without closing the chooser, unlike app-switcher.ts's
+// options -- picking several emoji to copy in a row is a reasonable thing
+// to want, and nothing about the row goes stale the way a quit/hide does).
+function emojiOptions(char: string): ChoiceOption[] {
+	return [
+		{ keyGlyph: "⏎", label: "Paste" },
+		{
+			mods: ["cmd", "shift"],
+			key: "c",
+			label: "Copy",
+			run: () => {
+				hs.pasteboard.writeString(char);
+				hs.ui.alert(`Copied ${char}`).duration(0.6).show();
+			},
+		},
+	];
 }
 
 // hs.chooser rows have no "render this unicode character" primitive --
@@ -111,6 +134,7 @@ function loadDataset(): EmojiChoice[] {
 		subText: meta.group,
 		char,
 		image: emojiImage(char),
+		options: emojiOptions(char),
 	}));
 }
 
@@ -128,6 +152,7 @@ function ensureLoaded(): void {
 	chooser.cornerRadius = Theme.cornerRadius;
 	chooser.textColor = chooserColor(Theme.text);
 	chooser.subTextColor = chooserColor(Theme.textDim);
+	attachOptionsBar(chooser);
 }
 
 // Pins the top FREQUENT_PIN_COUNT most-picked emoji (count > 0) to the

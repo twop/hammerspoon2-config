@@ -97,7 +97,10 @@ function primaryScreenHeight(): number {
 // setTopLeft()/topLeft() exchange a single point, reflected across the
 // primary screen's full height -- self-inverse, so the same function
 // converts a Hammerspoon point to its canvas-window equivalent and back.
-function flipTopLeftY(point: { x: number; y: number }): { x: number; y: number } {
+function flipTopLeftY(point: { x: number; y: number }): {
+	x: number;
+	y: number;
+} {
 	return { x: point.x, y: primaryScreenHeight() - point.y };
 }
 
@@ -106,14 +109,21 @@ function flipTopLeftY(point: { x: number; y: number }): { x: number; y: number }
 // top-left point -- the height shifts which edge "y" refers to, so this
 // isn't just flipTopLeftY() again. Still self-inverse (applying it to an
 // already-AppKit-coordinate rect converts it back to Hammerspoon
-// coordinates), so it's also used to read canvas.frame() back.
-function flipFrameY(rect: { x: number; y: number; w: number; h: number }): {
+// coordinates), so it's also used to read canvas.frame() back. Exported
+// for chooser-options-bar.ts too, which positions its own small canvas the
+// same way.
+export function flipFrameY(rect: { x: number; y: number; w: number; h: number }): {
 	x: number;
 	y: number;
 	w: number;
 	h: number;
 } {
-	return { x: rect.x, y: primaryScreenHeight() - rect.y - rect.h, w: rect.w, h: rect.h };
+	return {
+		x: rect.x,
+		y: primaryScreenHeight() - rect.y - rect.h,
+		w: rect.w,
+		h: rect.h,
+	};
 }
 
 function nowMs(): number {
@@ -390,7 +400,9 @@ function menuRestTopLeft(w: number, h: number): { x: number; y: number } {
 
 function buildPlaceholderCanvas(topLeft: { x: number; y: number }): HSCanvas {
 	const size = Theme.placeholderCanvasSize;
-	const c = hs.canvas.create(flipFrameY({ x: topLeft.x, y: topLeft.y, w: size, h: size }));
+	const c = hs.canvas.create(
+		flipFrameY({ x: topLeft.x, y: topLeft.y, w: size, h: size }),
+	);
 	c.appendElements([
 		{
 			type: "circle",
@@ -425,7 +437,11 @@ function buildPlaceholderCanvas(topLeft: { x: number; y: number }): HSCanvas {
 // `factor` -- indices and base alphas mirror buildPlaceholderCanvas()'s
 // appendElements() above exactly.
 function setPlaceholderOpacity(c: HSCanvas, factor: number): void {
-	c.setElementAttribute(0, "fillColor", canvasColor(Theme.background, Theme.backgroundAlpha * factor));
+	c.setElementAttribute(
+		0,
+		"fillColor",
+		canvasColor(Theme.background, Theme.backgroundAlpha * factor),
+	);
 	c.setElementAttribute(1, "strokeColor", canvasColor(Theme.border, factor));
 	c.setElementAttribute(2, "fillColor", canvasColor(Theme.border, factor));
 }
@@ -453,7 +469,9 @@ function revealMenu(): void {
 	if (placeholderCanvas) {
 		const leftRest = placeholderRestTopLeft("left");
 		animateCanvas(placeholderCanvas, {
-			fromPoint: flipTopLeftY(placeholderCanvas.topLeft() as { x: number; y: number }),
+			fromPoint: flipTopLeftY(
+				placeholderCanvas.topLeft() as { x: number; y: number },
+			),
 			toPoint: leftRest,
 			duration: SPLIT_TRANSITION_DURATION,
 		});
@@ -491,7 +509,7 @@ function renderMenu(
 			fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
 			strokeColor: canvasColor(Theme.border),
 			strokeWidth: Theme.borderWidth,
-			roundedRectRadii: Theme.cornerRadius,
+			roundedRectRadii: { xRadius: Theme.cornerRadius, yRadius: Theme.cornerRadius },
 		},
 	]);
 
@@ -570,10 +588,7 @@ function renderMenu(
 				type: "rectangle",
 				action: "fill",
 				fillColor: canvasColor(Theme.surface),
-				roundedRectRadii: {
-					xRadius: Theme.keyChipRadius,
-					yRadius: Theme.keyChipRadius,
-				},
+				roundedRectRadii: { xRadius: Theme.keyChipRadius, yRadius: Theme.keyChipRadius },
 				frame: { x: keyColX, y: rowY, w: keyColW, h: rowTextH },
 				id,
 				trackMouseDown: true,
@@ -719,7 +734,9 @@ function withinCanvas(point: { x: number; y: number }): boolean {
 	// canvas.frame() comes back in AppKit coordinates; point (a mouse event
 	// location) is in Hammerspoon coordinates -- flipFrameY() is self-inverse,
 	// so it converts the frame back rather than the Hammerspoon rect forward.
-	const f = flipFrameY(canvas.frame() as { x: number; y: number; w: number; h: number });
+	const f = flipFrameY(
+		canvas.frame() as { x: number; y: number; w: number; h: number },
+	);
 	return (
 		point.x >= f.x &&
 		point.x <= f.x + f.w &&

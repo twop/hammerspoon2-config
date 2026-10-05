@@ -23,6 +23,7 @@ import * as EmojiPicker from "./emoji-picker";
 import * as MenuItemSearch from "./menu-item-search";
 import * as AppPicker from "./app-picker";
 import * as AppSwitcher from "./app-switcher";
+import * as ClipboardHistory from "./clipboard-history";
 import * as ProcessExplorer from "./process-explorer";
 import * as Term from "./termview";
 import * as ZellijMenu from "./zellij-menu";
@@ -348,6 +349,13 @@ export const menuTree: MenuItem[] = [
 	},
 
 	{
+		key: "v",
+		label: "Clipboard history",
+		icon: symbol("doc.on.clipboard"),
+		action: { kind: "callback", run: () => ClipboardHistory.show() },
+	},
+
+	{
 		key: "p",
 		label: "Process explorer",
 		icon: symbol("cpu"),
@@ -481,6 +489,12 @@ export const menuTree: MenuItem[] = [
 					label: "Daily note",
 					icon: symbol("note.text"),
 					action: { kind: "callback", run: openDailyNote },
+				},
+				{
+					key: "c",
+					label: "Clear clipboard history",
+					icon: symbol("trash"),
+					action: { kind: "callback", run: () => ClipboardHistory.clear() },
 				},
 				{
 					key: "r",
