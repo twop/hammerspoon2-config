@@ -16518,6 +16518,58 @@ function show4() {
   c.show();
 }
 
+// app-switcher.ts
+var chooser4 = null;
+function listRunningApps() {
+  const frontmost = hs.application.frontmost();
+  const choices = [];
+  for (const app of hs.application.runningApplications()) {
+    if (app.kind !== "standard") continue;
+    if (app.pid === frontmost?.pid) continue;
+    if (app.bundleID === hs.appinfo.bundleIdentifier) continue;
+    if (!app.bundleID || !app.title) continue;
+    choices.push({
+      text: app.title,
+      subText: app.bundleID,
+      bundleID: app.bundleID,
+      image: HSImage.fromAppBundle(app.bundleID)
+    });
+  }
+  choices.sort((a, b) => a.text.localeCompare(b.text));
+  return choices;
+}
+function onSelect3(choice) {
+  if (!choice) return;
+  const bundleID = choice["bundleID"];
+  hs.timer.doAfter(0, async () => {
+    const app = hs.application.matchingBundleID(bundleID);
+    const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
+    if (windows.length === 1) {
+      focusWindow(windows[0]);
+    } else if (windows.length > 1) {
+      showWindowChooser(windows);
+    } else {
+      await activateApp(bundleID);
+    }
+  });
+}
+function ensureLoaded4() {
+  if (chooser4) return;
+  chooser4 = hs.chooser.create();
+  styleChooser(chooser4);
+  chooser4.visibleRows = 9;
+  chooser4.searchSubText = true;
+  chooser4.placeholder = "Switch to app\u2026";
+  chooser4.onSelect = onSelect3;
+}
+function show5() {
+  ensureLoaded4();
+  const c = chooser4;
+  c.setChoices(listRunningApps());
+  c.query = "";
+  c.show();
+}
+
 // process-explorer.ts
 async function parseProcesses() {
   const { stdout } = await hs.task.shell("ps -axo pid,ppid,pcpu,rss,comm", {});
@@ -16619,7 +16671,7 @@ function showActionsChooser(record, byPid) {
   };
   c.show();
 }
-async function show5() {
+async function show6() {
   const byPid = await parseProcesses();
   showLevelChooser(rootPids(byPid), byPid);
 }
@@ -17029,10 +17081,16 @@ var menuTree = [
     action: { kind: "callback", run: () => show4() }
   },
   {
+    key: " ",
+    label: "Switch app",
+    icon: symbol("rectangle.stack"),
+    action: { kind: "callback", run: () => show5() }
+  },
+  {
     key: "p",
     label: "Process explorer",
     icon: symbol("cpu"),
-    action: { kind: "callback", run: () => void show5() }
+    action: { kind: "callback", run: () => void show6() }
   },
   {
     key: "a",

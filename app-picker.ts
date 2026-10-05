@@ -4,6 +4,11 @@
 // lookup (v1's infoForBundlePath is SKIP_DOCS'd out of v2's JS API), so
 // bundleIDForPath() reads the bundle's Info.plist directly via hs.plist
 // instead.
+//
+// styleChooser()/focusWindow()/showWindowChooser()/activateApp() are
+// exported for app-switcher.ts too -- same windows-drill-down and
+// focus-handoff behavior fits both a full installed-apps list and a
+// running-apps-only switcher equally well.
 
 import { Theme, chooserColor } from "./nord-theme";
 
@@ -24,7 +29,7 @@ interface AppChoice {
 let chooser: HSChooser | null = null;
 let allChoices: AppChoice[] = []; // built once from APP_DIRS, cached for the session
 
-function styleChooser(c: HSChooser): void {
+export function styleChooser(c: HSChooser): void {
 	c.width = 0.3;
 	c.backgroundColor = chooserColor(Theme.background);
 	c.borderColor = chooserColor(Theme.border);
@@ -42,7 +47,7 @@ function bundleIDForPath(path: string): string | null {
 	return typeof id === "string" ? id : null;
 }
 
-function focusWindow(win: HSWindow): void {
+export function focusWindow(win: HSWindow): void {
 	if (win.isMinimized) win.unminimize();
 	win.focus();
 }
@@ -50,7 +55,7 @@ function focusWindow(win: HSWindow): void {
 // Shown when the selected app has more than one standard window; picking
 // a row focuses that window. A plain new chooser each time (window lists
 // are per-invocation, unlike the app list).
-function showWindowChooser(windows: HSWindow[]): void {
+export function showWindowChooser(windows: HSWindow[]): void {
 	const c = hs.chooser.create();
 	styleChooser(c);
 	c.visibleRows = Math.min(windows.length, 9);
@@ -78,7 +83,7 @@ function showWindowChooser(windows: HSWindow[]): void {
 // "restore focus to the previously active window") reclaims focus before
 // it resolves, so a follow-up activate() once it's confirmed running
 // re-asserts focus for real.
-async function activateApp(bundleID: string): Promise<void> {
+export async function activateApp(bundleID: string): Promise<void> {
 	await hs.application.launchOrFocus(bundleID);
 	hs.application.matchingBundleID(bundleID)?.activate();
 }

@@ -22,6 +22,7 @@
 import * as EmojiPicker from "./emoji-picker";
 import * as MenuItemSearch from "./menu-item-search";
 import * as AppPicker from "./app-picker";
+import * as AppSwitcher from "./app-switcher";
 import * as ProcessExplorer from "./process-explorer";
 import * as Term from "./termview";
 import * as ZellijMenu from "./zellij-menu";
@@ -337,6 +338,13 @@ export const menuTree: MenuItem[] = [
 		label: "Open or focus app",
 		icon: symbol("magnifyingglass"),
 		action: { kind: "callback", run: () => AppPicker.show() },
+	},
+
+	{
+		key: " ",
+		label: "Switch app",
+		icon: symbol("rectangle.stack"),
+		action: { kind: "callback", run: () => AppSwitcher.show() },
 	},
 
 	{
