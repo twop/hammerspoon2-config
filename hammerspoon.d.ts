@@ -8674,7 +8674,7 @@ Controls where this window sits in the macOS window hierarchy.
      * @param name The level name
      * @returns Self for chaining
      */
-    level(name: '"normal"' | '"floating"' | '"screenSaver"' | '"dock"' | '"status"' | '"popUpMenu"'): HSUIWindow;
+    level(name: "normal" | "floating" | "screenSaver" | "dock" | "status" | "popUpMenu"): HSUIWindow;
 
     /**
      * Set the window's background color

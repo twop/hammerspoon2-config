@@ -16417,7 +16417,7 @@ function render(bar, options) {
   bar.replaceElements(elements);
   bar.show();
 }
-function attachOptionsBar(chooser6, getOptionsForRow) {
+function attachOptionsBar(chooser7, getOptionsForRow) {
   let bar = null;
   let pollTimer = null;
   let tap2 = null;
@@ -16433,7 +16433,7 @@ function attachOptionsBar(chooser6, getOptionsForRow) {
     render(bar, currentOptions);
   }
   function tick() {
-    const row = chooser6.selectedRowContents(null);
+    const row = chooser7.selectedRowContents(null);
     if (row === lastRow) return;
     lastRow = row;
     currentOptions = row ? getOptionsForRow(row) : void 0;
@@ -16453,7 +16453,7 @@ function attachOptionsBar(chooser6, getOptionsForRow) {
     }
     return hs.eventtap.emit;
   }
-  chooser6.onShow = () => {
+  chooser7.onShow = () => {
     lastRow = null;
     tick();
     pollTimer = hs.timer.create(POLL_INTERVAL_SECONDS, tick);
@@ -16461,7 +16461,7 @@ function attachOptionsBar(chooser6, getOptionsForRow) {
     tap2 = hs.eventtap.addWatcher([KEY_DOWN2], onKeyDown, false);
     tap2?.start();
   };
-  chooser6.onHide = () => {
+  chooser7.onHide = () => {
     pollTimer?.stop();
     pollTimer = null;
     tap2?.stop();
@@ -17258,6 +17258,67 @@ async function show7() {
   showLevelChooser(rootPids(byPid), byPid);
 }
 
+// daily-note.ts
+var MONTH_ABBR = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+var WEEKDAY_ABBR = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+function dailyNotePath() {
+  const now = /* @__PURE__ */ new Date();
+  const mon = MONTH_ABBR[now.getMonth()];
+  const day = String(now.getDate()).padStart(2, "0");
+  const dow = WEEKDAY_ABBR[now.getDay()];
+  const dir = `${hs.fs.homeDirectory()}/work/journal/${mon}`;
+  return { path: `${dir}/${day}-${dow}.md`, dir };
+}
+
+// quick-note.ts
+function appendToDailyNote(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  const { path, dir } = dailyNotePath();
+  hs.fs.mkdir(dir);
+  if (!hs.fs.attributes(path)) hs.fs.write(path, "");
+  hs.fs.append(path, trimmed + "\n");
+  hs.ui.alert("Appended to daily note").duration(0.6).show();
+}
+var chooser6 = null;
+function ensureChooser() {
+  if (chooser6) return;
+  chooser6 = hs.chooser.create();
+  chooser6.width = 0.35;
+  chooser6.visibleRows = 1;
+  chooser6.placeholder = "Type a quick note\u2026";
+  chooser6.backgroundColor = chooserColor(Theme.background);
+  chooser6.borderColor = chooserColor(Theme.border);
+  chooser6.cornerRadius = Theme.cornerRadius;
+  chooser6.textColor = chooserColor(Theme.text);
+  chooser6.subTextColor = chooserColor(Theme.textDim);
+  chooser6.queryColor = chooserColor(Theme.text);
+  chooser6.placeholderColor = chooserColor(Theme.textDim);
+  chooser6.setChoices((query) => [
+    { text: query ? `Append: ${query}` : "Type a note, then press \u23CE to append" }
+  ]);
+  chooser6.onQueryChange = () => chooser6.refreshChoices();
+  chooser6.onSelect = () => appendToDailyNote(chooser6.query);
+  attachOptionsBar(chooser6, () => [
+    {
+      mods: ["cmd"],
+      key: "return",
+      label: "Append to daily note",
+      run: () => {
+        const text = chooser6.query;
+        chooser6.hide();
+        appendToDailyNote(text);
+      }
+    }
+  ]);
+}
+function show8() {
+  ensureChooser();
+  const c = chooser6;
+  c.query = "";
+  c.show();
+}
+
 // key-labels.ts
 var SINGLE_CHARS = [
   "a",
@@ -17445,14 +17506,6 @@ function hideOtherApps() {
     if (app.bundleID === hs.appinfo.bundleIdentifier) continue;
     app.hide();
   }
-}
-function dailyNotePath() {
-  const now = /* @__PURE__ */ new Date();
-  const mon = now.toLocaleString("en-US", { month: "short" }).toLowerCase();
-  const day = String(now.getDate()).padStart(2, "0");
-  const dow = now.toLocaleString("en-US", { weekday: "short" }).toLowerCase();
-  const dir = `${hs.fs.homeDirectory()}/work/journal/${mon}`;
-  return { path: `${dir}/${day}-${dow}.md`, dir };
 }
 function openDailyNote() {
   const { path, dir } = dailyNotePath();
@@ -17802,6 +17855,12 @@ var menuTree = [
           label: "Daily note",
           icon: symbol("note.text"),
           action: { kind: "callback", run: openDailyNote }
+        },
+        {
+          key: "q",
+          label: "Quick note",
+          icon: symbol("square.and.pencil"),
+          action: { kind: "callback", run: () => show8() }
         },
         {
           key: "c",

@@ -25,8 +25,10 @@ import * as AppPicker from "./app-picker";
 import * as AppSwitcher from "./app-switcher";
 import * as ClipboardHistory from "./clipboard-history";
 import * as ProcessExplorer from "./process-explorer";
+import * as QuickNote from "./quick-note";
 import * as Term from "./termview";
 import * as ZellijMenu from "./zellij-menu";
+import { dailyNotePath } from "./daily-note";
 import type { MenuItem } from "./leader-menu";
 
 function symbol(name: string): HSImage {
@@ -108,15 +110,6 @@ function hideOtherApps(): void {
 // ============================================================
 // DAILY JOURNAL NOTE
 // ============================================================
-
-function dailyNotePath(): { path: string; dir: string } {
-	const now = new Date();
-	const mon = now.toLocaleString("en-US", { month: "short" }).toLowerCase();
-	const day = String(now.getDate()).padStart(2, "0");
-	const dow = now.toLocaleString("en-US", { weekday: "short" }).toLowerCase();
-	const dir = `${hs.fs.homeDirectory()}/work/journal/${mon}`;
-	return { path: `${dir}/${day}-${dow}.md`, dir };
-}
 
 function openDailyNote(): void {
 	const { path, dir } = dailyNotePath();
@@ -489,6 +482,12 @@ export const menuTree: MenuItem[] = [
 					label: "Daily note",
 					icon: symbol("note.text"),
 					action: { kind: "callback", run: openDailyNote },
+				},
+				{
+					key: "q",
+					label: "Quick note",
+					icon: symbol("square.and.pencil"),
+					action: { kind: "callback", run: () => QuickNote.show() },
 				},
 				{
 					key: "c",
