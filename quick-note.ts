@@ -4,8 +4,7 @@
 // working Cmd+Enter detection via chooser-options-bar.ts.
 
 import { dailyNotePath } from "./daily-note";
-import { Theme, chooserColor } from "./nord-theme";
-import { attachOptionsBar } from "./chooser-options-bar";
+import type { ChooserSpec } from "./chooser-runtime";
 
 function appendToDailyNote(text: string): void {
 	const trimmed = text.trim();
@@ -17,44 +16,31 @@ function appendToDailyNote(text: string): void {
 	hs.ui.alert("Appended to daily note").duration(0.6).show();
 }
 
-let chooser: HSChooser | null = null;
-
-function ensureChooser(): void {
-	if (chooser) return;
-	chooser = hs.chooser.create();
-	chooser.width = 0.35;
-	chooser.visibleRows = 1;
-	chooser.placeholder = "Type a quick note…";
-	chooser.backgroundColor = chooserColor(Theme.background);
-	chooser.borderColor = chooserColor(Theme.border);
-	chooser.cornerRadius = Theme.cornerRadius;
-	chooser.textColor = chooserColor(Theme.text);
-	chooser.subTextColor = chooserColor(Theme.textDim);
-	chooser.queryColor = chooserColor(Theme.text);
-	chooser.placeholderColor = chooserColor(Theme.textDim);
-	chooser.setChoices((query) => [
-		{ text: query ? `Append: ${query}` : "Type a note, then press ⏎ to append" },
-	]);
-	chooser.onQueryChange = () => chooser!.refreshChoices();
-	// Plain Enter confirms the row -- appends the current query.
-	chooser.onSelect = () => appendToDailyNote(chooser!.query);
-	attachOptionsBar(chooser, () => [
-		{
-			mods: ["cmd"],
-			key: "return",
-			label: "Append to daily note",
-			run: () => {
-				const text = chooser!.query;
-				chooser!.hide();
-				appendToDailyNote(text);
-			},
-		},
-	]);
+interface NoteChoice {
+	text: string;
 }
 
-export function show(): void {
-	ensureChooser();
-	const c = chooser!;
-	c.query = "";
-	c.show();
+export function spec(): ChooserSpec<NoteChoice> {
+	return {
+		width: 0.35,
+		visibleRows: 1,
+		placeholder: "Type a quick note…",
+		choices: (query) => [
+			{ text: query ? `Append: ${query}` : "Type a note, then press ⏎ to append" },
+		],
+		// Plain Enter confirms the row -- appends the current query.
+		onSelect: (_choice, chooser) => appendToDailyNote(chooser.query),
+		optionsBar: (_row, chooser) => [
+			{
+				mods: ["cmd"],
+				key: "return",
+				label: "Append to daily note",
+				run: () => {
+					const text = chooser.query;
+					chooser.hide();
+					appendToDailyNote(text);
+				},
+			},
+		],
+	};
 }

@@ -14,9 +14,9 @@
 // Snapshotting hs.window.focusedWindow() right before the chooser steals
 // focus does the same job with less.
 
-import { Theme, chooserColor } from "./nord-theme";
 import emojiData from "unicode-emoji-json/data-by-emoji.json";
-import { attachOptionsBar, type ChoiceOption } from "./chooser-options-bar";
+import type { ChoiceOption } from "./chooser-options-bar";
+import type { ChooserSpec } from "./chooser-runtime";
 import { Canvas } from "./canvas";
 
 const FREQUENCY_KEY = "emojiPicker.frequency";
@@ -58,7 +58,7 @@ function emojiOptions(char: string): ChoiceOption[] {
 // `image` wants a real HSImage. Rasterizing each emoji via a throwaway
 // hs.canvas (never shown on screen; imageFromCanvas() works regardless)
 // is the only way to get one. Memoized since it's the same ~64x64 bitmap
-// every time a given emoji is shown again, across every show() call.
+// every time a given emoji is shown again, across every spec() call.
 const imageCache = new Map<string, HSImage | null>();
 
 function emojiImage(char: string): HSImage | null {
@@ -84,7 +84,6 @@ function emojiImage(char: string): HSImage | null {
 	return image;
 }
 
-let chooser: HSChooser | null = null;
 let allChoices: EmojiChoice[] = []; // built once from emojiData, cached for the session
 
 function loadFrequency(): Record<string, number> {
@@ -93,13 +92,8 @@ function loadFrequency(): Record<string, number> {
 	);
 }
 
-function onSelect(
-	choice: Record<string, unknown> | null,
-	previouslyFocused: HSWindow | null,
-): void {
-	if (!choice) return;
-
-	const char = choice["char"] as string;
+function onSelect(choice: EmojiChoice, previouslyFocused: HSWindow | null): void {
+	const char = choice.char;
 	// Deferred: onSelect fires while the chooser is still in the middle of
 	// hiding (which itself restores focus to the previously active window),
 	// so focusing + pasting synchronously right here races that handoff.
@@ -135,28 +129,12 @@ function loadDataset(): EmojiChoice[] {
 	}));
 }
 
-function ensureLoaded(): void {
-	if (chooser) return;
-	allChoices = loadDataset();
-
-	chooser = hs.chooser.create();
-	chooser.visibleRows = 9;
-	chooser.width = 0.3;
-	chooser.searchSubText = true;
-	chooser.placeholder = "Search emoji…";
-	chooser.backgroundColor = chooserColor(Theme.background);
-	chooser.borderColor = chooserColor(Theme.border);
-	chooser.cornerRadius = Theme.cornerRadius;
-	chooser.textColor = chooserColor(Theme.text);
-	chooser.subTextColor = chooserColor(Theme.textDim);
-	attachOptionsBar(chooser, (row) => emojiOptions(row["char"] as string));
-}
-
 // Pins the top FREQUENT_PIN_COUNT most-picked emoji (count > 0) to the
 // front, ranked by descending pick count; everything else keeps the
-// dataset's original order below. Recomputed on every show() -- cheap, it's
-// just sorting/filtering the already-parsed in-memory list.
+// dataset's original order below. Recomputed on every spec() -- cheap,
+// it's just sorting/filtering the already-parsed in-memory list.
 function buildRankedChoices(): EmojiChoice[] {
+	if (allChoices.length === 0) allChoices = loadDataset();
 	const freq = loadFrequency();
 	const frequent = allChoices.filter((c) => (freq[c.char] ?? 0) > 0);
 	const rest = allChoices.filter((c) => (freq[c.char] ?? 0) <= 0);
@@ -171,14 +149,15 @@ function buildRankedChoices(): EmojiChoice[] {
 	];
 }
 
-export function show(): void {
-	ensureLoaded();
-	const c = chooser!;
-
+export function spec(): ChooserSpec<EmojiChoice> {
 	const previouslyFocused = hs.window.focusedWindow();
-	c.onSelect = (choice) => onSelect(choice, previouslyFocused);
-
-	c.setChoices(buildRankedChoices());
-	c.query = ""; // hs.chooser keeps the previous query across show() calls
-	c.show();
+	return {
+		choices: buildRankedChoices(),
+		visibleRows: 9,
+		width: 0.3,
+		searchSubText: true,
+		placeholder: "Search emoji…",
+		onSelect: (choice) => onSelect(choice, previouslyFocused),
+		optionsBar: (row) => emojiOptions(row.char),
+	};
 }

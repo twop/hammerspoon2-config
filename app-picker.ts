@@ -5,12 +5,12 @@
 // bundleIDForPath() reads the bundle's Info.plist directly via hs.plist
 // instead.
 //
-// styleChooser()/focusWindow()/showWindowChooser()/activateApp() are
-// exported for app-switcher.ts too -- same windows-drill-down and
-// focus-handoff behavior fits both a full installed-apps list and a
-// running-apps-only switcher equally well.
+// focusWindow()/windowChooserSpec()/activateApp() are exported for
+// app-switcher.ts too -- same windows-drill-down and focus-handoff
+// behavior fits both a full installed-apps list and a running-apps-only
+// switcher equally well.
 
-import { Theme, chooserColor } from "./nord-theme";
+import { eraseChooser, type ChooserSpec } from "./chooser-runtime";
 
 const APP_DIRS = [
 	"/Applications",
@@ -26,18 +26,12 @@ interface AppChoice {
 	image: HSImage | null;
 }
 
-let chooser: HSChooser | null = null;
-let allChoices: AppChoice[] = []; // built once from APP_DIRS, cached for the session
-
-export function styleChooser(c: HSChooser): void {
-	c.width = 0.3;
-	c.backgroundColor = chooserColor(Theme.background);
-	c.borderColor = chooserColor(Theme.border);
-	c.cornerRadius = Theme.cornerRadius;
-	c.textColor = chooserColor(Theme.text);
-	c.subTextColor = chooserColor(Theme.textMuted);
-	c.selectionColor = chooserColor(Theme.selectionBack);
+interface WindowChoice {
+	text: string;
+	winIndex: number;
 }
+
+let allChoices: AppChoice[] = []; // built once from APP_DIRS, cached for the session
 
 function bundleIDForPath(path: string): string | null {
 	const info = hs.plist.fromFile(`${path}/Contents/Info.plist`) as Record<
@@ -54,25 +48,21 @@ export function focusWindow(win: HSWindow): void {
 }
 
 // Shown when the selected app has more than one standard window; picking
-// a row focuses that window. A plain new chooser each time (window lists
-// are per-invocation, unlike the app list).
-export function showWindowChooser(windows: HSWindow[]): void {
-	const c = hs.chooser.create();
-	styleChooser(c);
-	c.visibleRows = Math.min(windows.length, 9);
-	c.placeholder = "Choose window…";
-	c.setChoices(
-		windows.map((win) => ({
+// a row focuses that window. A plain new spec each time (window lists are
+// per-invocation, unlike the app list).
+export function windowChooserSpec(windows: HSWindow[]): ChooserSpec<WindowChoice> {
+	return {
+		visibleRows: Math.min(windows.length, 9),
+		placeholder: "Choose window…",
+		choices: windows.map((win, winIndex) => ({
 			text: win.title || "Untitled",
-			winIndex: windows.indexOf(win),
+			winIndex,
 		})),
-	);
-	c.onSelect = (choice) => {
-		if (!choice) return;
-		const win = windows[choice["winIndex"] as number];
-		if (win) hs.timer.doAfter(0, () => focusWindow(win));
+		onSelect: (choice) => {
+			const win = windows[choice.winIndex];
+			if (win) hs.timer.doAfter(0, () => focusWindow(win));
+		},
 	};
-	c.show();
 }
 
 // Handles both "not running yet" and "running but with no standard window
@@ -89,31 +79,30 @@ export async function activateApp(bundleID: string): Promise<void> {
 	hs.application.matchingBundleID(bundleID)?.activate();
 }
 
-function onSelect(choice: Record<string, unknown> | null): void {
-	if (!choice) return;
-	const path = choice["path"] as string;
+// Deferred for the parts that are real side effects (focusing a window,
+// activating the app): onSelect fires while the chooser is still in the
+// middle of hiding (which itself restores focus to the previously active
+// window), so doing that synchronously right here races that handoff. One
+// tick later it's settled. Drilling into the window chooser instead
+// doesn't need its own defer -- chooser-runtime.ts's mountChooser() already
+// defers mounting whatever spec onSelect returns, for the same reason.
+function onSelect(choice: AppChoice): void | ChooserSpec {
+	const bundleID = bundleIDForPath(choice.path);
+	if (!bundleID) return;
 
-	// Deferred: onSelect fires while the chooser is still in the middle of
-	// hiding (which itself restores focus to the previously active window),
-	// so activating/focusing a window -- or opening the window-count
-	// chooser below -- synchronously right here races that handoff. One
-	// tick later it's settled. Same issue as leader-menu.ts's selectOption()
-	// and emoji-picker.ts's onSelect().
-	hs.timer.doAfter(0, async () => {
-		const bundleID = bundleIDForPath(path);
-		if (!bundleID) return;
+	const app = hs.application.matchingBundleID(bundleID);
+	const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
 
-		const app = hs.application.matchingBundleID(bundleID);
-		const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
-
-		if (windows.length === 1) {
-			focusWindow(windows[0]!);
-		} else if (windows.length > 1) {
-			showWindowChooser(windows);
-		} else {
-			await activateApp(bundleID);
-		}
-	});
+	if (windows.length === 1) {
+		const win = windows[0]!;
+		hs.timer.doAfter(0, () => focusWindow(win));
+		return;
+	}
+	if (windows.length > 1) {
+		return eraseChooser(windowChooserSpec(windows));
+	}
+	hs.timer.doAfter(0, () => void activateApp(bundleID));
+	return;
 }
 
 function scanApps(): AppChoice[] {
@@ -141,22 +130,13 @@ function scanApps(): AppChoice[] {
 	return choices;
 }
 
-function ensureLoaded(): void {
-	if (chooser) return;
-	allChoices = scanApps();
-
-	chooser = hs.chooser.create();
-	styleChooser(chooser);
-	chooser.visibleRows = 9;
-	chooser.searchSubText = true;
-	chooser.placeholder = "Open or focus app…";
-	chooser.onSelect = onSelect;
-}
-
-export function show(): void {
-	ensureLoaded();
-	const c = chooser!;
-	c.setChoices(allChoices);
-	c.query = ""; // hs.chooser keeps the previous query across show() calls
-	c.show();
+export function spec(): ChooserSpec<AppChoice> {
+	if (allChoices.length === 0) allChoices = scanApps();
+	return {
+		choices: allChoices,
+		visibleRows: 9,
+		searchSubText: true,
+		placeholder: "Open or focus app…",
+		onSelect,
+	};
 }

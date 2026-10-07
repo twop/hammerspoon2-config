@@ -5,6 +5,16 @@
 // below, now a proper tagged union instead of "exactly one of five
 // optional fields is present".
 //
+// The engine itself is a small Elm/TEA-style loop: selecting something
+// produces a Msg ("open this chooser", "go back", "run this effect"), one
+// pure update() interprets that Msg against the current Scene stack
+// (Model), and dispatch() mounts/unmounts the actual UI (a canvas menu
+// level, or an hs.chooser screen via chooser-runtime.ts) to match. This is
+// what makes back-navigation -- Delete to pop a submenu, ⌘[ to pop a
+// chooser, even backing out of a chooser into the menu level that opened
+// it -- all the same mechanism instead of three separately hand-rolled
+// ones: see Scene/Msg/update/dispatch below.
+//
 // Notable v1 -> v2 differences this port had to work around:
 // - No `hs.window.filter` module. The "close on any app/window stealing
 //   focus" watcher is rebuilt from two primitives that *do* exist:
@@ -23,6 +33,8 @@
 
 import { Theme, canvasColor } from "./nord-theme";
 import { Canvas, cornerRadii } from "./canvas";
+import { flipTopLeftY, flipFrameY } from "./screen-geometry";
+import { mountChooser, type ChooserSpec } from "./chooser-runtime";
 
 // `noUncheckedIndexedAccess` turns every Record<string, T> lookup -- dot
 // notation included -- into `T | undefined`, so these named constants (all
@@ -43,6 +55,7 @@ export type MenuAction =
 			kind: "submenu";
 			submenu: MenuItem[] | (() => MenuItem[] | Promise<MenuItem[]>);
 	  }
+	| { kind: "chooser"; spec: () => ChooserSpec | Promise<ChooserSpec> }
 	| { kind: "app"; bundleID: string }
 	| { kind: "cmd"; path: string; args?: string[] }
 	| { kind: "url"; url: string }
@@ -55,9 +68,18 @@ export interface MenuItem {
 	action: MenuAction;
 }
 
-interface StackFrame {
-	options: MenuItem[];
-	breadcrumb: string[];
+// One thing visibly shown; a stack of these is the engine's Model. Closed
+// union on purpose -- "menu" (this file's own canvas) and "chooser"
+// (chooser-runtime.ts's hs.chooser) are all seven of today's menu entries
+// need. A future third kind (e.g. a chooser with a preview pane, carrying
+// its own layout) would be a sibling variant with its own branch in
+// mountScene() below, without touching update().
+export type Scene =
+	| { kind: "menu"; options: MenuItem[]; breadcrumb: string[] }
+	| { kind: "chooser"; spec: ChooserSpec };
+
+interface MountedScene {
+	hide(): void;
 }
 
 // ============================================================
@@ -69,68 +91,6 @@ const PLACEHOLDER_ENTER_DURATION = 0.2;
 const SPLIT_TRANSITION_DURATION = 0.22;
 const SLIDE_OFFSET_PX = 14;
 const SPLIT_GAP_PX = 24;
-
-// Every position in this file (screen frames, mouse event locations, the
-// rest/animation points below) is in ordinary Hammerspoon screen
-// coordinates: top-left origin, y increasing downward. hs.canvas's window
-// position -- create()/setFrame()/setTopLeft()/frame()/topLeft() -- is the
-// one exception: it uses unflipped AppKit screen coordinates (origin at
-// the bottom-left of the *primary* screen, y increasing upward; see
-// hs.canvas's own module-level "Coordinate systems" docs). These two
-// helpers are the only place that boundary gets crossed -- every other
-// call site stays in Hammerspoon coordinates.
-// Cached rather than looked up fresh on every call -- animateCanvas()'s
-// tick runs at 60fps, and a native hs.screen.primary() round-trip on every
-// single frame was visibly janking the position tween. Invalidated only
-// when the display configuration actually changes.
-let cachedPrimaryScreenHeight: number | null = null;
-hs.screen.on("change", () => {
-	cachedPrimaryScreenHeight = null;
-});
-
-function primaryScreenHeight(): number {
-	if (cachedPrimaryScreenHeight === null) {
-		cachedPrimaryScreenHeight = hs.screen.primary()!.fullFrame.h;
-	}
-	return cachedPrimaryScreenHeight;
-}
-
-// setTopLeft()/topLeft() exchange a single point, reflected across the
-// primary screen's full height -- self-inverse, so the same function
-// converts a Hammerspoon point to its canvas-window equivalent and back.
-function flipTopLeftY(point: { x: number; y: number }): {
-	x: number;
-	y: number;
-} {
-	return { x: point.x, y: primaryScreenHeight() - point.y };
-}
-
-// create()/setFrame()/frame() exchange a whole rect anchored at its
-// *bottom*-left corner in AppKit's y-up space, unlike setTopLeft()'s
-// top-left point -- the height shifts which edge "y" refers to, so this
-// isn't just flipTopLeftY() again. Still self-inverse (applying it to an
-// already-AppKit-coordinate rect converts it back to Hammerspoon
-// coordinates), so it's also used to read canvas.frame() back. Exported
-// for chooser-options-bar.ts too, which positions its own small canvas the
-// same way.
-export function flipFrameY(rect: {
-	x: number;
-	y: number;
-	w: number;
-	h: number;
-}): {
-	x: number;
-	y: number;
-	w: number;
-	h: number;
-} {
-	return {
-		x: rect.x,
-		y: primaryScreenHeight() - rect.y - rect.h,
-		w: rect.w,
-		h: rect.h,
-	};
-}
 
 function nowMs(): number {
 	return hs.timer.absoluteTime() / 1e6;
@@ -154,12 +114,12 @@ interface AnimateOpts {
 
 // Tweens a canvas's position over opts.duration seconds, computing
 // progress from wall-clock elapsed time each tick (not tick count).
-// Registered in animTimers so closeMenu() can stop it if the menu is torn
-// down mid-flight. v1 also faded alpha here (canvas:alpha()) -- HSCanvas
-// has no window-level alpha/opacity method in v2 (confirmed absent from
-// its full method list), so a fade has to animate each element's own
-// fillColor/strokeColor alpha instead (via opts.onTick) rather than the
-// window itself.
+// Registered in animTimers so a full teardown can stop it if the menu is
+// torn down mid-flight. v1 also faded alpha here (canvas:alpha()) --
+// HSCanvas has no window-level alpha/opacity method in v2 (confirmed
+// absent from its full method list), so a fade has to animate each
+// element's own fillColor/strokeColor alpha instead (via opts.onTick)
+// rather than the window itself.
 function animateCanvas(canvas: HSCanvas, opts: AnimateOpts): HSTimer | null {
 	const durationMs = (opts.duration ?? 0.15) * 1000;
 	const startMs = nowMs();
@@ -204,22 +164,25 @@ let canvas: HSCanvas | null = null;
 let placeholderCanvas: HSCanvas | null = null;
 let tap: HSEventTap | null = null;
 let mouseTap: HSEventTap | null = null;
-let stack: StackFrame[] = [];
+let model: Scene[] = []; // the stack, bottom -> top; [] means fully closed
+let mounted: MountedScene | null = null;
 let revealed = false;
 let revealTimer: HSTimer | null = null;
 const animTimers = new Set<HSTimer>();
 let showStartMs = 0;
 
-// Focus-steal watcher state (see startFocusWatcher()).
+// Focus-steal watcher state (see startFocusWatcher()). Canvas-menu-only --
+// hs.chooser is a real native panel that manages its own focus/modality --
+// so this lives and dies with a "menu" scene's own mount, not globally.
 let watchedAppElement: HSAXElement | null = null;
 const onFocusedWindowChanged = (
 	_notification: string,
 	_element: HSAXElement,
-): void => closeMenu("focus stolen");
+): void => dispatch({ type: "close" });
 
 // Rebinds the focusedWindowChanged watch to whichever app is now frontmost.
 // Split out from onDidActivate so startFocusWatcher() can seed it for the
-// already-frontmost app at show()-time without also closing the menu it's
+// already-frontmost app at mount-time without also closing the menu it's
 // in the middle of opening.
 function watchAppElement(app: HSApplication | null): void {
 	if (watchedAppElement) {
@@ -239,43 +202,133 @@ function watchAppElement(app: HSApplication | null): void {
 
 const onDidActivate = (app: HSApplication | null): void => {
 	watchAppElement(app);
-	closeMenu("app activated");
+	dispatch({ type: "close" });
 };
 
+function startFocusWatcher(): void {
+	hs.application.on("didActivate", onDidActivate);
+	watchAppElement(hs.application.frontmost());
+}
+
+function stopFocusWatcher(): void {
+	hs.application.off("didActivate", onDidActivate);
+	watchAppElement(null);
+}
+
 // ============================================================
-// CORE
+// ENGINE: Scene stack (Model) / Msg / update / dispatch
 // ============================================================
 
-function closeMenu(_source: string): void {
+type Msg =
+	| { type: "openSubmenu"; options: MenuItem[]; breadcrumb: string[] }
+	| { type: "openChooser"; spec: ChooserSpec }
+	| { type: "back" }
+	| { type: "close" }
+	| { type: "runEffect"; run: () => void }; // app/cmd/url/callback all normalize to this
+
+type Cmd = (() => void) | null;
+
+// Pure: given the current stack and an event, what should the stack be
+// next, and is there a side effect ("Cmd") to run once the view has caught
+// up? "back" pops one Scene, or closes entirely if already at the root --
+// same whether the Scene below is another chooser or a menu level.
+function update(stack: Scene[], msg: Msg): [Scene[], Cmd] {
+	switch (msg.type) {
+		case "openSubmenu":
+			return [
+				[
+					...stack,
+					{ kind: "menu", options: msg.options, breadcrumb: msg.breadcrumb },
+				],
+				null,
+			];
+		case "openChooser":
+			return [[...stack, { kind: "chooser", spec: msg.spec }], null];
+		case "back":
+			return [stack.length > 1 ? stack.slice(0, -1) : [], null];
+		case "close":
+			return [[], null];
+		case "runEffect":
+			return [[], msg.run];
+	}
+}
+
+// Cancels the reveal-delay machinery without fully closing -- used both on
+// a real full close and whenever a chooser scene mounts (chooser-runtime's
+// hs.chooser shows itself immediately, natively, so there's nothing left
+// to "reveal" once one's on screen; see mountChooserScene()).
+function stopRevealTimerAndPlaceholder(): void {
 	if (revealTimer) {
 		revealTimer.stop();
 		revealTimer = null;
 	}
 	for (const timer of animTimers) timer.stop();
 	animTimers.clear();
-
-	canvas?.destroy();
-	canvas = null;
 	placeholderCanvas?.destroy();
 	placeholderCanvas = null;
+}
 
-	tap?.stop();
-	tap = null;
-	mouseTap?.stop();
-	mouseTap = null;
-
-	hs.application.off("didActivate", onDidActivate);
-	if (watchedAppElement) {
-		hs.ax.off(
-			watchedAppElement,
-			"focusedWindowChanged",
-			onFocusedWindowChanged,
-		);
-		watchedAppElement = null;
+function dispatch(msg: Msg): void {
+	const [next, cmd] = update(model, msg);
+	const prevTop = model[model.length - 1];
+	const nextTop = next[next.length - 1];
+	if (nextTop !== prevTop) {
+		mounted?.hide();
+		mounted = nextTop ? mountScene(nextTop, next.length > 1) : null;
 	}
+	if (next.length === 0) {
+		stopRevealTimerAndPlaceholder();
+		revealed = false;
+	}
+	model = next;
+	// Deferred: cmd often shows a real window (hs.chooser, launches an app,
+	// ...) or otherwise interacts with focus -- running it synchronously
+	// here, still inside whatever eventtap/onSelect callback triggered this
+	// dispatch (itself mid-teardown of the previous scene's own canvas/tap),
+	// can leave the new thing created but never actually brought forward.
+	// One tick later, we're clear of that callback and it shows reliably.
+	if (cmd) hs.timer.doAfter(0, cmd);
+}
 
-	stack = [];
-	revealed = false;
+function mountScene(scene: Scene, canGoBack: boolean): MountedScene {
+	return scene.kind === "menu"
+		? mountMenu(scene.options, scene.breadcrumb)
+		: mountChooserScene(scene.spec, canGoBack);
+}
+
+function mountMenu(options: MenuItem[], breadcrumb: string[]): MountedScene {
+	// Blind-typing grace period: keys are live immediately, but nothing is
+	// drawn until revealMenu() fires (or this mount is replaced by
+	// something else first) -- see armRevealTimer()/revealMenu() below.
+	if (revealed) renderMenu(options, breadcrumb);
+	bindKeys(options, breadcrumb);
+	startFocusWatcher();
+	startMouseWatcher();
+	return {
+		hide: () => {
+			tap?.stop();
+			tap = null;
+			mouseTap?.stop();
+			mouseTap = null;
+			stopFocusWatcher();
+			canvas?.destroy();
+			canvas = null;
+		},
+	};
+}
+
+function mountChooserScene(
+	spec: ChooserSpec,
+	canGoBack: boolean,
+): MountedScene {
+	stopRevealTimerAndPlaceholder();
+	revealed = true; // committed past the reveal-placeholder phase for the rest of this session
+	return mountChooser(
+		spec,
+		() => dispatch({ type: "close" }),
+		(nextSpec) => dispatch({ type: "openChooser", spec: nextSpec }),
+		canGoBack ? () => dispatch({ type: "back" }) : undefined,
+	);
 }
 
 function cancelRevealTimer(): void {
@@ -311,22 +364,12 @@ function runShellCommand(path: string, args: string[]): void {
 	task.start();
 }
 
-// Pushes a resolved submenu onto the stack and shows it -- the shared tail
-// end of entering a submenu, regardless of whether it resolved
-// synchronously or (e.g. zellij-menu.ts's zellij-CLI-backed lists, since
-// v2 has no synchronous shell-out) via a Promise.
-function pushAndRenderSubmenu(
-	submenuOptions: MenuItem[],
-	newBreadcrumb: string[],
-): void {
-	stack.push({ options: submenuOptions, breadcrumb: newBreadcrumb });
-	if (revealed) renderMenu(submenuOptions, newBreadcrumb);
-	bindKeys(submenuOptions, newBreadcrumb);
-}
-
 // The one place that decides what "selecting" an item does, shared by the
 // keydown handler and renderMenu's mouseCallback, so a click and the
-// matching keypress always behave identically.
+// matching keypress always behave identically. Turns a MenuAction into a
+// Msg and hands it to dispatch() -- "submenu" and "chooser" grow the
+// stack; everything else normalizes to "runEffect" (close everything, then
+// run this side effect).
 function selectOption(opt: MenuItem, breadcrumb: string[]): void {
 	const action = opt.action;
 	switch (action.kind) {
@@ -339,43 +382,53 @@ function selectOption(opt: MenuItem, breadcrumb: string[]): void {
 					? action.submenu()
 					: action.submenu;
 			if (resolved instanceof Promise) {
-				void resolved.then((items) =>
-					pushAndRenderSubmenu(items, newBreadcrumb),
+				void resolved.then((options) =>
+					dispatch({ type: "openSubmenu", options, breadcrumb: newBreadcrumb }),
 				);
 			} else {
-				pushAndRenderSubmenu(resolved, newBreadcrumb);
+				dispatch({
+					type: "openSubmenu",
+					options: resolved,
+					breadcrumb: newBreadcrumb,
+				});
+			}
+			break;
+		}
+		case "chooser": {
+			// Mirrors the "submenu" case above: most spec() builders resolve
+			// synchronously, but process-explorer.ts's needs an async `ps`
+			// shell-out first.
+			const resolved = action.spec();
+			if (resolved instanceof Promise) {
+				void resolved.then((spec) => dispatch({ type: "openChooser", spec }));
+			} else {
+				dispatch({ type: "openChooser", spec: resolved });
 			}
 			break;
 		}
 		case "app":
-			closeMenu("app launched");
-			// Deferred, and with a follow-up activate() once it's confirmed
-			// running -- same reasoning (and the same fix) as app-picker.ts's
-			// activateApp(): a cold launch can take long enough that whatever
-			// reclaims focus in the meantime (closing this menu's own canvas is
-			// itself a focus-adjacent event) ends up on top once launchOrFocus()
-			// actually resolves, leaving the app launched but not frontmost.
-			hs.timer.doAfter(0, async () => {
-				await hs.application.launchOrFocus(action.bundleID);
-				hs.application.matchingBundleID(action.bundleID)?.activate();
+			dispatch({
+				type: "runEffect",
+				run: async () => {
+					await hs.application.launchOrFocus(action.bundleID);
+					hs.application.matchingBundleID(action.bundleID)?.activate();
+				},
 			});
 			break;
 		case "cmd":
-			closeMenu("cmd started");
-			runShellCommand(action.path, action.args ?? []);
+			dispatch({
+				type: "runEffect",
+				run: () => runShellCommand(action.path, action.args ?? []),
+			});
 			break;
 		case "url":
-			closeMenu("url opened");
-			hs.urlevent.openURL(action.url);
+			dispatch({
+				type: "runEffect",
+				run: () => hs.urlevent.openURL(action.url),
+			});
 			break;
 		case "callback":
-			closeMenu("callback called");
-			// Deferred: action.run() often shows a real window (hs.chooser, etc.)
-			// -- calling that synchronously, still inside the keyDown eventtap
-			// callback that's mid-teardown of the menu's own canvas/tap, can leave
-			// the new window created but never actually brought forward. One tick
-			// later, we're clear of the eventtap callback and it shows reliably.
-			hs.timer.doAfter(0, action.run);
+			dispatch({ type: "runEffect", run: action.run });
 			break;
 	}
 }
@@ -477,7 +530,11 @@ function revealMenu(): void {
 		});
 	}
 
-	const top = stack[stack.length - 1]!;
+	// The reveal timer only ever fires while a "menu" scene is still on top
+	// (mountChooserScene() cancels it the instant a chooser mounts), so this
+	// is always safe -- defensive check only.
+	const top = model[model.length - 1];
+	if (!top || top.kind !== "menu") return;
 	renderMenu(top.options, top.breadcrumb, { entering: true });
 }
 
@@ -668,19 +725,12 @@ function bindKeys(options: MenuItem[], breadcrumb: string[]): void {
 			const keyName = String(codeMap[String(event.keyCode)] ?? "");
 
 			if (keyName === "escape") {
-				closeMenu("esc pressed");
+				dispatch({ type: "close" });
 				return hs.eventtap.consume;
 			}
 
 			if (keyName === "delete") {
-				if (stack.length <= 1) {
-					closeMenu("backspace at root");
-				} else {
-					stack.pop();
-					const parent = stack[stack.length - 1]!;
-					if (revealed) renderMenu(parent.options, parent.breadcrumb);
-					bindKeys(parent.options, parent.breadcrumb);
-				}
+				dispatch({ type: "back" });
 				return hs.eventtap.consume;
 			}
 
@@ -708,7 +758,7 @@ function bindKeys(options: MenuItem[], breadcrumb: string[]): void {
 				"Leader menu: eventtap failed to start — check Accessibility permissions",
 			)
 			.show();
-		closeMenu("listening failed to start");
+		dispatch({ type: "close" });
 		return;
 	}
 	tap.start();
@@ -736,22 +786,12 @@ function startMouseWatcher(): void {
 		[LEFT_MOUSE_DOWN, RIGHT_MOUSE_DOWN, OTHER_MOUSE_DOWN],
 		(event) => {
 			const loc = event.location as { x: number; y: number };
-			if (!withinCanvas(loc)) closeMenu("click outside");
+			if (!withinCanvas(loc)) dispatch({ type: "close" });
 			return hs.eventtap.emit; // let the click still reach whatever's underneath
 		},
 		false,
 	);
 	mouseTap?.start();
-}
-
-// Close on focus loss: catches anything stealing focus WITHOUT a click --
-// another app activating, Spotlight, a dialog, the screensaver, or (via
-// the per-app focusedWindowChanged watch) a same-app window switch. See
-// the file header for why this needed two primitives instead of v1's
-// single hs.window.filter subscription.
-function startFocusWatcher(): void {
-	hs.application.on("didActivate", onDidActivate);
-	watchAppElement(hs.application.frontmost());
 }
 
 // ============================================================
@@ -760,12 +800,8 @@ function startFocusWatcher(): void {
 
 export function show(menuTree: MenuItem[]): void {
 	showStartMs = nowMs();
-	closeMenu("close at the start"); // defensive: never stack a new menu/timers on a stale one
-
-	stack = [{ options: menuTree, breadcrumb: [] }];
+	dispatch({ type: "close" }); // defensive: never stack a new menu/timers on a stale one
 	showPlaceholderInitial();
-	bindKeys(menuTree, []); // eventtap is live immediately; the real menu isn't drawn yet
-	startMouseWatcher();
-	startFocusWatcher();
+	dispatch({ type: "openSubmenu", options: menuTree, breadcrumb: [] }); // eventtap is live immediately; the real menu isn't drawn yet
 	armRevealTimer();
 }

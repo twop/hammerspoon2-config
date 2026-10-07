@@ -30,6 +30,7 @@ import * as Term from "./termview";
 import * as ZellijMenu from "./zellij-menu";
 import { dailyNotePath } from "./daily-note";
 import type { MenuItem } from "./leader-menu";
+import { eraseChooser } from "./chooser-runtime";
 
 function symbol(name: string): HSImage {
 	return HSImage.fromSymbol(name)!;
@@ -296,7 +297,7 @@ export const menuTree: MenuItem[] = [
 		key: "E",
 		label: "Pick emoji (native)",
 		icon: symbol("face.smiling"),
-		action: { kind: "callback", run: () => EmojiPicker.show() },
+		action: { kind: "chooser", spec: () => eraseChooser(EmojiPicker.spec()) },
 	},
 
 	{
@@ -324,35 +325,35 @@ export const menuTree: MenuItem[] = [
 		key: "m",
 		label: "Search menu items",
 		icon: symbol("menucard"),
-		action: { kind: "callback", run: () => MenuItemSearch.show() },
+		action: { kind: "chooser", spec: () => MenuItemSearch.spec() },
 	},
 
 	{
 		key: "/",
 		label: "Open or focus app",
 		icon: symbol("magnifyingglass"),
-		action: { kind: "callback", run: () => AppPicker.show() },
+		action: { kind: "chooser", spec: () => eraseChooser(AppPicker.spec()) },
 	},
 
 	{
 		key: " ",
 		label: "Switch app",
 		icon: symbol("rectangle.stack"),
-		action: { kind: "callback", run: () => AppSwitcher.show() },
+		action: { kind: "chooser", spec: () => eraseChooser(AppSwitcher.spec()) },
 	},
 
 	{
 		key: "v",
 		label: "Clipboard history",
 		icon: symbol("doc.on.clipboard"),
-		action: { kind: "callback", run: () => ClipboardHistory.show() },
+		action: { kind: "chooser", spec: () => eraseChooser(ClipboardHistory.spec()) },
 	},
 
 	{
 		key: "p",
 		label: "Process explorer",
 		icon: symbol("cpu"),
-		action: { kind: "callback", run: () => void ProcessExplorer.show() },
+		action: { kind: "chooser", spec: () => ProcessExplorer.spec() },
 	},
 
 	{
@@ -487,7 +488,7 @@ export const menuTree: MenuItem[] = [
 					key: "q",
 					label: "Quick note",
 					icon: symbol("square.and.pencil"),
-					action: { kind: "callback", run: () => QuickNote.show() },
+					action: { kind: "chooser", spec: () => eraseChooser(QuickNote.spec()) },
 				},
 				{
 					key: "c",

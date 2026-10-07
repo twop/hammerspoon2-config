@@ -1,10 +1,12 @@
 // Active-process explorer, driven by hs.chooser and themed to match the
 // other pickers. Port of process-explorer.lua. Nothing here is cached
-// across show() calls. v2 has no synchronous hs.execute, so parsing `ps`
+// across spec() calls. v2 has no synchronous hs.execute, so parsing `ps`
 // is async (hs.task.shell()); everything downstream (rootPids, the
-// chooser levels) stays synchronous once that one await resolves.
+// chooser levels) stays synchronous once that one await resolves -- hence
+// spec()'s own Promise<ChooserSpec> return, mirroring MenuAction's
+// "submenu" kind's existing sync-or-Promise pattern.
 
-import { Theme, chooserColor } from "./nord-theme";
+import { eraseChooser, type ChooserSpec } from "./chooser-runtime";
 
 interface ProcRecord {
   pid: number;
@@ -66,7 +68,14 @@ function iconForPid(pid: number, comm: string): HSImage | null {
   return bundlePath ? HSImage.iconForFile(bundlePath) : null;
 }
 
-function processRow(record: ProcRecord): Record<string, unknown> {
+interface ProcRow {
+  text: string;
+  subText: string;
+  image: HSImage | null;
+  pid: number;
+}
+
+function processRow(record: ProcRecord): ProcRow {
   return {
     text: record.comm.match(/([^/]+)$/)?.[1] ?? record.comm,
     subText:
@@ -89,36 +98,32 @@ async function killProcess(pid: number, signal: "TERM" | "KILL"): Promise<void> 
   await hs.task.shell(`kill ${signal === "KILL" ? "-KILL" : "-TERM"} ${pid}`, {});
 }
 
-function styleChooser(c: HSChooser): void {
-  c.width = 0.35;
-  c.backgroundColor = chooserColor(Theme.background);
-  c.borderColor = chooserColor(Theme.border);
-  c.cornerRadius = Theme.cornerRadius;
-  c.textColor = chooserColor(Theme.text);
-  c.subTextColor = chooserColor(Theme.textDim);
-}
-
-function showLevelChooser(pids: number[], byPid: Map<number, ProcRecord>): void {
+function levelSpec(pids: number[], byPid: Map<number, ProcRecord>): ChooserSpec<ProcRow> {
   const records = pids.map((pid) => byPid.get(pid)).filter((r): r is ProcRecord => r !== undefined);
   records.sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0));
 
-  const c = hs.chooser.create();
-  styleChooser(c);
-  c.visibleRows = 9;
-  c.searchSubText = true;
-  c.placeholder = "Browse processes…";
-  c.setChoices(records.map(processRow));
-  c.onSelect = (choice) => {
-    if (!choice) return;
-    const record = byPid.get(choice["pid"] as number);
-    if (record) showActionsChooser(record, byPid);
+  return {
+    visibleRows: 9,
+    width: 0.35,
+    searchSubText: true,
+    placeholder: "Browse processes…",
+    choices: records.map(processRow),
+    onSelect: (choice) => {
+      const record = byPid.get(choice.pid);
+      return record ? eraseChooser(actionsSpec(record, byPid)) : undefined;
+    },
   };
-  c.show();
 }
 
-function showActionsChooser(record: ProcRecord, byPid: Map<number, ProcRecord>): void {
+interface ActionRow {
+  text: string;
+  subText: string;
+  kind: "term" | "kill" | "children";
+}
+
+function actionsSpec(record: ProcRecord, byPid: Map<number, ProcRecord>): ChooserSpec<ActionRow> {
   const name = record.comm.match(/([^/]+)$/)?.[1] ?? record.comm;
-  const choices: Record<string, unknown>[] = [
+  const choices: ActionRow[] = [
     { text: "Kill (SIGTERM)", subText: `Ask ${name} (pid ${record.pid}) to quit`, kind: "term" },
     { text: "Force Kill (SIGKILL)", subText: `Immediately terminate ${name} (pid ${record.pid})`, kind: "kill" },
   ];
@@ -126,21 +131,21 @@ function showActionsChooser(record: ProcRecord, byPid: Map<number, ProcRecord>):
     choices.push({ text: `View ${record.children.length} children →`, subText: name, kind: "children" });
   }
 
-  const c = hs.chooser.create();
-  styleChooser(c);
-  c.visibleRows = Math.min(choices.length, 9);
-  c.placeholder = name;
-  c.setChoices(choices);
-  c.onSelect = (choice) => {
-    if (!choice) return;
-    if (choice["kind"] === "term") void killProcess(record.pid, "TERM");
-    else if (choice["kind"] === "kill") void killProcess(record.pid, "KILL");
-    else if (choice["kind"] === "children") showLevelChooser(record.children, byPid);
+  return {
+    visibleRows: Math.min(choices.length, 9),
+    width: 0.35,
+    placeholder: name,
+    choices,
+    onSelect: (choice) => {
+      if (choice.kind === "term") void killProcess(record.pid, "TERM");
+      else if (choice.kind === "kill") void killProcess(record.pid, "KILL");
+      else if (choice.kind === "children") return eraseChooser(levelSpec(record.children, byPid));
+      return undefined;
+    },
   };
-  c.show();
 }
 
-export async function show(): Promise<void> {
+export async function spec(): Promise<ChooserSpec> {
   const byPid = await parseProcesses();
-  showLevelChooser(rootPids(byPid), byPid);
+  return eraseChooser(levelSpec(rootPids(byPid), byPid));
 }

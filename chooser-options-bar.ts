@@ -24,7 +24,7 @@
 // never crossing the bridge with a live closure at all.
 
 import { Theme, canvasColor } from "./nord-theme";
-import { flipFrameY } from "./leader-menu";
+import { flipFrameY } from "./screen-geometry";
 import { Canvas, cornerRadii, type CanvasElement } from "./canvas";
 
 export interface ChoiceOption {

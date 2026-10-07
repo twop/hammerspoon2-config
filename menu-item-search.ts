@@ -10,10 +10,7 @@
 // (hs.application.menuGlyphs has no v2 equivalent at all), and this just
 // flattens title paths without a shortcut hint.
 
-import { Theme, chooserColor } from "./nord-theme";
-
-let chooser: HSChooser | null = null;
-let currentApp: HSApplication | null = null; // captured fresh at the top of every show(), used by onSelect
+import { eraseChooser, type ChooserSpec } from "./chooser-runtime";
 
 interface RawMenuItem {
   title?: string;
@@ -49,46 +46,45 @@ function flatten(items: RawMenuItem[] | undefined, ancestorTitles: string[], out
   }
 }
 
-function ensureLoaded(): void {
-  if (chooser) return;
-
-  chooser = hs.chooser.create();
-  chooser.visibleRows = 9;
-  chooser.width = 0.35;
-  chooser.searchSubText = true;
-  chooser.placeholder = "Filter by menu item title…";
-  chooser.backgroundColor = chooserColor(Theme.background);
-  chooser.borderColor = chooserColor(Theme.border);
-  chooser.cornerRadius = Theme.cornerRadius;
-  chooser.textColor = chooserColor(Theme.text);
-  chooser.subTextColor = chooserColor(Theme.textDim);
-  chooser.onSelect = (choice) => {
-    if (choice && currentApp) currentApp.selectMenuItemByPath(choice["path"] as string[]);
-  };
+// A chooser always gets shown once a "chooser" MenuAction fires -- there's
+// no "don't open anything" signal in that contract -- so the "no
+// frontmost app"/"no menu items" cases that used to just silently no-op
+// now show a single informational row instead.
+//
+// This module's spec() returns the already-*erased* ChooserSpec (unlike
+// every other chooser module, which returns a typed ChooserSpec<T> and
+// leaves erasing to leader-menu-config.ts's call site) because the two
+// branches below have genuinely different row shapes -- there's no single
+// T to parametrize the function's own return type over.
+function informationalSpec(message: string): ChooserSpec {
+  return eraseChooser<{ text: string }>({
+    choices: [{ text: message }],
+    onSelect: () => {},
+  });
 }
 
-export function show(): void {
-  // Capture before ensureLoaded()/chooser.show() steal frontmost-app status.
+export function spec(): ChooserSpec {
   const app = hs.application.frontmost();
-  if (!app) return;
-  currentApp = app;
+  if (!app) return informationalSpec("No frontmost app");
 
-  ensureLoaded();
   hs.ui.alert("Loading menu items…").duration(1).show();
-
   const menuItems = app.getMenuItems() as RawMenuItem[] | null;
-  if (!menuItems) return;
-
   const choices: MenuChoice[] = [];
   // Top-level menu 0 is always the bolded app-name menu (About/Preferences/
   // Services/Hide/Quit) -- boilerplate that's identical in shape across every
   // app and never what you're searching for, so it's dropped rather than
   // flattened alongside the app's real menus (File, Edit, ...).
-  flatten(menuItems.slice(1), [], choices);
-  if (choices.length === 0) return;
+  if (menuItems) flatten(menuItems.slice(1), [], choices);
+  if (choices.length === 0) return informationalSpec("No menu items found");
 
-  const c = chooser!;
-  c.setChoices(choices);
-  c.query = ""; // hs.chooser keeps the previous query across show() calls
-  c.show();
+  return eraseChooser<MenuChoice>({
+    choices,
+    visibleRows: 9,
+    width: 0.35,
+    searchSubText: true,
+    placeholder: "Filter by menu item title…",
+    onSelect: (choice) => {
+      app.selectMenuItemByPath(choice.path);
+    },
+  });
 }

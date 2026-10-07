@@ -33,6 +33,27 @@ export function chooserColor(hex: string): HSColor {
 	return HSColor.hex(hex);
 }
 
+// Applied to every hs.chooser this config creates (chooser-runtime.ts's
+// mountChooser()) so every picker is consistently themed -- previously each
+// of app-picker.ts/emoji-picker.ts/menu-item-search.ts/clipboard-history.ts/
+// quick-note.ts/process-explorer.ts hand-rolled its own subset of these
+// properties, with gaps (e.g. only quick-note.ts set queryColor/
+// placeholderColor). Per-chooser fields that vary (width, visibleRows,
+// placeholder, searchSubText) stay on each chooser's own ChooserSpec.
+export const DEFAULT_CHOOSER_WIDTH = 0.3;
+
+export function styleChooser(c: HSChooser): void {
+	c.width = DEFAULT_CHOOSER_WIDTH;
+	c.backgroundColor = chooserColor(Theme.background);
+	c.borderColor = chooserColor(Theme.border);
+	c.cornerRadius = Theme.cornerRadius;
+	c.textColor = chooserColor(Theme.text);
+	c.subTextColor = chooserColor(Theme.textDim);
+	c.selectionColor = chooserColor(Theme.selectionBack);
+	c.queryColor = chooserColor(Theme.text);
+	c.placeholderColor = chooserColor(Theme.textDim);
+}
+
 // Raw palette (nord0..nord15, plus nord-night's darker nord0Dark) -- see
 // nord-theme.lua for the full derivation/cross-check notes.
 export const Nord = {

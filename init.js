@@ -63,6 +63,18 @@ function canvasColor(hex, alpha = 1) {
 function chooserColor(hex) {
   return HSColor.hex(hex);
 }
+var DEFAULT_CHOOSER_WIDTH = 0.3;
+function styleChooser(c) {
+  c.width = DEFAULT_CHOOSER_WIDTH;
+  c.backgroundColor = chooserColor(Theme.background);
+  c.borderColor = chooserColor(Theme.border);
+  c.cornerRadius = Theme.cornerRadius;
+  c.textColor = chooserColor(Theme.text);
+  c.subTextColor = chooserColor(Theme.textDim);
+  c.selectionColor = chooserColor(Theme.selectionBack);
+  c.queryColor = chooserColor(Theme.text);
+  c.placeholderColor = chooserColor(Theme.textDim);
+}
 var Nord = {
   nord0: "#2E3440",
   nord0Dark: "#252933",
@@ -169,17 +181,7 @@ function cornerRadii(r) {
   return r;
 }
 
-// leader-menu.ts
-var OVERLAY_LEVEL = hs.canvas.windowLevels["overlay"];
-var KEY_DOWN = hs.eventtap.eventTypes["keyDown"];
-var LEFT_MOUSE_DOWN = hs.eventtap.eventTypes["leftMouseDown"];
-var RIGHT_MOUSE_DOWN = hs.eventtap.eventTypes["rightMouseDown"];
-var OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"];
-var REVEAL_DELAY_SECONDS = 0.5;
-var PLACEHOLDER_ENTER_DURATION = 0.2;
-var SPLIT_TRANSITION_DURATION = 0.22;
-var SLIDE_OFFSET_PX = 14;
-var SPLIT_GAP_PX = 24;
+// screen-geometry.ts
 var cachedPrimaryScreenHeight = null;
 hs.screen.on("change", () => {
   cachedPrimaryScreenHeight = null;
@@ -201,6 +203,254 @@ function flipFrameY(rect) {
     h: rect.h
   };
 }
+
+// chooser-options-bar.ts
+var KEY_DOWN = hs.eventtap.eventTypes["keyDown"];
+var POLL_INTERVAL_SECONDS = 0.1;
+var BOTTOM_MARGIN_PX = 24;
+var CHIP_PADDING_X = 7;
+var CHIP_LABEL_GAP = 6;
+var PAIR_GAP = 20;
+var BAR_HEIGHT = Theme.paddingY * 2 + Theme.fontSize * Theme.textFrameHeightMultiplier;
+var CHIP_HEIGHT = Theme.fontSize + 10;
+var BOLD_RULER_INDEX = 0;
+var REGULAR_RULER_INDEX = 1;
+var MOD_SYMBOLS = {
+  cmd: "\u2318",
+  shift: "\u21E7",
+  alt: "\u2325",
+  ctrl: "\u2303",
+  fn: "fn"
+};
+var KEY_SYMBOLS = {
+  return: "\u21B5",
+  delete: "\u232B",
+  escape: "\u238B",
+  tab: "\u21E5",
+  space: "\u2423"
+};
+function keyDisplay(key) {
+  return KEY_SYMBOLS[key] ?? key.toUpperCase();
+}
+var GENERIC_MODS = ["cmd", "shift", "alt", "ctrl", "fn"];
+function genericMods(flags) {
+  return new Set(flags.filter((f) => GENERIC_MODS.includes(f)));
+}
+function modsMatch(required, present) {
+  return required.length === present.size && required.every((m) => present.has(m));
+}
+var CONTROL_KEYCODES = {
+  return: 36,
+  tab: 48,
+  space: 49,
+  delete: 51,
+  escape: 53
+};
+function keyMatches(optKey, event, keyName) {
+  const controlCode = CONTROL_KEYCODES[optKey];
+  if (controlCode !== void 0) return event.keyCode === controlCode;
+  if (optKey === keyName) return true;
+  return event.characters === optKey;
+}
+function chipGlyph(opt) {
+  if (opt.mods && opt.key)
+    return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
+  return opt.keyGlyph ?? "";
+}
+function barRect(width) {
+  const sf = hs.screen.primary().frame;
+  return {
+    x: sf.x + (sf.w - width) / 2,
+    y: sf.y + sf.h - BAR_HEIGHT - BOTTOM_MARGIN_PX,
+    w: width,
+    h: BAR_HEIGHT
+  };
+}
+function rulerElements() {
+  return [
+    Canvas.text("", {
+      textWeight: "bold",
+      textSize: Theme.fontSize,
+      frame: { x: 0, y: 0, w: 1, h: 1 }
+    }),
+    Canvas.text("", {
+      textSize: Theme.fontSize,
+      frame: { x: 0, y: 0, w: 1, h: 1 }
+    })
+  ];
+}
+function backgroundElement() {
+  return Canvas.rectangle("strokeAndFill", {
+    fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
+    strokeColor: canvasColor(Theme.border),
+    strokeWidth: Theme.borderWidth,
+    roundedRectRadii: cornerRadii(Theme.cornerRadius)
+  });
+}
+function buildBarCanvas() {
+  const c = hs.canvas.create(flipFrameY(barRect(200)));
+  c.appendElements([...rulerElements(), backgroundElement()]);
+  c.levelValue(hs.canvas.windowLevels["overlay"]);
+  c.clickActivating(false);
+  return c;
+}
+function render(bar, options) {
+  const rowTextH = Theme.fontSize * Theme.textFrameHeightMultiplier;
+  const segments2 = options.map((opt) => {
+    const glyph = chipGlyph(opt);
+    const chipTextSize = glyph ? bar.minimumTextSize(BOLD_RULER_INDEX, glyph) : { w: 0, h: 0 };
+    const labelSize = bar.minimumTextSize(REGULAR_RULER_INDEX, opt.label);
+    const chipW = glyph ? chipTextSize.w + CHIP_PADDING_X * 2 : 0;
+    const pairW = chipW + (chipW ? CHIP_LABEL_GAP : 0) + labelSize.w;
+    return { opt, glyph, chipW, labelW: labelSize.w, pairW };
+  });
+  const contentW = segments2.reduce((sum, s) => sum + s.pairW, 0) + Math.max(0, segments2.length - 1) * PAIR_GAP;
+  const maxW = hs.screen.primary().frame.w * 0.9;
+  const barWidth = Math.min(contentW + Theme.paddingX * 2, maxW);
+  bar.setFrame(flipFrameY(barRect(barWidth)));
+  const elements = [...rulerElements(), backgroundElement()];
+  const chipY = (BAR_HEIGHT - CHIP_HEIGHT) / 2;
+  const labelY = (BAR_HEIGHT - rowTextH) / 2;
+  let x = Theme.paddingX;
+  segments2.forEach((seg, i) => {
+    if (seg.chipW) {
+      elements.push(
+        Canvas.rectangle("fill", {
+          fillColor: canvasColor(Theme.surface),
+          roundedRectRadii: cornerRadii(Theme.keyChipRadius),
+          frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
+        })
+      );
+      elements.push(
+        Canvas.text(seg.glyph, {
+          textColor: canvasColor(Theme.text),
+          textWeight: "bold",
+          textSize: Theme.fontSize,
+          textAlignment: "center",
+          frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
+        })
+      );
+      x += seg.chipW + CHIP_LABEL_GAP;
+    }
+    elements.push(
+      Canvas.text(seg.opt.label, {
+        textColor: canvasColor(Theme.textDim),
+        textSize: Theme.fontSize,
+        frame: { x, y: labelY, w: seg.labelW + 2, h: rowTextH }
+      })
+    );
+    x += seg.labelW;
+    if (i < segments2.length - 1) x += PAIR_GAP;
+  });
+  bar.replaceElements(elements);
+  bar.show();
+}
+function attachOptionsBar(chooser, getOptionsForRow) {
+  let bar = null;
+  let pollTimer = null;
+  let tap2 = null;
+  let lastRow = null;
+  let currentOptions;
+  function renderCurrent() {
+    if (!currentOptions || currentOptions.length === 0) {
+      bar?.destroy();
+      bar = null;
+      return;
+    }
+    if (!bar) bar = buildBarCanvas();
+    render(bar, currentOptions);
+  }
+  function tick() {
+    const row = chooser.selectedRowContents(null);
+    if (row === lastRow) return;
+    lastRow = row;
+    currentOptions = row ? getOptionsForRow(row) : void 0;
+    renderCurrent();
+  }
+  function onKeyDown(event) {
+    if (!currentOptions) return hs.eventtap.emit;
+    const codeMap = hs.keycodes.map;
+    const keyName = String(codeMap[String(event.keyCode)] ?? "");
+    const flags = genericMods(event.flags);
+    for (const opt of currentOptions) {
+      if (!opt.key || !opt.run) continue;
+      if (keyMatches(opt.key, event, keyName) && modsMatch(opt.mods ?? [], flags)) {
+        opt.run();
+        return hs.eventtap.consume;
+      }
+    }
+    return hs.eventtap.emit;
+  }
+  chooser.onShow = () => {
+    lastRow = null;
+    tick();
+    pollTimer = hs.timer.create(POLL_INTERVAL_SECONDS, tick);
+    pollTimer.start();
+    tap2 = hs.eventtap.addWatcher([KEY_DOWN], onKeyDown, false);
+    tap2?.start();
+  };
+  chooser.onHide = () => {
+    pollTimer?.stop();
+    pollTimer = null;
+    tap2?.stop();
+    tap2 = null;
+    bar?.destroy();
+    bar = null;
+  };
+}
+
+// chooser-runtime.ts
+function eraseChooser(spec8) {
+  return {
+    placeholder: spec8.placeholder,
+    searchSubText: spec8.searchSubText,
+    visibleRows: spec8.visibleRows,
+    width: spec8.width,
+    choices: spec8.choices,
+    onSelect: (choice, chooser) => spec8.onSelect(choice, chooser),
+    optionsBar: spec8.optionsBar ? (choice, chooser) => spec8.optionsBar(choice, chooser) : void 0
+  };
+}
+function mountChooser(spec8, onClose, onOpenChooser, onBack) {
+  const c = hs.chooser.create();
+  styleChooser(c);
+  if (spec8.width !== void 0) c.width = spec8.width;
+  c.visibleRows = spec8.visibleRows ?? 9;
+  c.searchSubText = spec8.searchSubText ?? false;
+  c.placeholder = spec8.placeholder ?? "";
+  c.setChoices(spec8.choices);
+  if (typeof spec8.choices === "function") {
+    c.onQueryChange = () => c.refreshChoices();
+  }
+  c.onSelect = (choice) => {
+    if (choice === null) {
+      onClose();
+      return;
+    }
+    const result = spec8.onSelect(choice, c);
+    if (result) hs.timer.doAfter(0, () => onOpenChooser(result));
+    else onClose();
+  };
+  attachOptionsBar(c, (row) => {
+    const own = spec8.optionsBar?.(row, c) ?? [];
+    return onBack ? [...own, { mods: ["cmd"], key: "[", label: "Back", run: onBack }] : own;
+  });
+  c.query = "";
+  c.show();
+  return { hide: () => c.hide() };
+}
+
+// leader-menu.ts
+var OVERLAY_LEVEL = hs.canvas.windowLevels["overlay"];
+var KEY_DOWN2 = hs.eventtap.eventTypes["keyDown"];
+var LEFT_MOUSE_DOWN = hs.eventtap.eventTypes["leftMouseDown"];
+var RIGHT_MOUSE_DOWN = hs.eventtap.eventTypes["rightMouseDown"];
+var OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"];
+var REVEAL_DELAY_SECONDS = 0.5;
+var PLACEHOLDER_ENTER_DURATION = 0.2;
+var SPLIT_TRANSITION_DURATION = 0.22;
+var SLIDE_OFFSET_PX = 14;
+var SPLIT_GAP_PX = 24;
 function nowMs() {
   return hs.timer.absoluteTime() / 1e6;
 }
@@ -243,13 +493,14 @@ var canvas2 = null;
 var placeholderCanvas = null;
 var tap = null;
 var mouseTap = null;
-var stack = [];
+var model = [];
+var mounted = null;
 var revealed = false;
 var revealTimer = null;
 var animTimers = /* @__PURE__ */ new Set();
 var showStartMs = 0;
 var watchedAppElement = null;
-var onFocusedWindowChanged = (_notification, _element) => closeMenu("focus stolen");
+var onFocusedWindowChanged = (_notification, _element) => dispatch({ type: "close" });
 function watchAppElement(app) {
   if (watchedAppElement) {
     hs.ax.off(
@@ -267,34 +518,90 @@ function watchAppElement(app) {
 }
 var onDidActivate = (app) => {
   watchAppElement(app);
-  closeMenu("app activated");
+  dispatch({ type: "close" });
 };
-function closeMenu(_source) {
+function startFocusWatcher() {
+  hs.application.on("didActivate", onDidActivate);
+  watchAppElement(hs.application.frontmost());
+}
+function stopFocusWatcher() {
+  hs.application.off("didActivate", onDidActivate);
+  watchAppElement(null);
+}
+function update(stack, msg) {
+  switch (msg.type) {
+    case "openSubmenu":
+      return [
+        [
+          ...stack,
+          { kind: "menu", options: msg.options, breadcrumb: msg.breadcrumb }
+        ],
+        null
+      ];
+    case "openChooser":
+      return [[...stack, { kind: "chooser", spec: msg.spec }], null];
+    case "back":
+      return [stack.length > 1 ? stack.slice(0, -1) : [], null];
+    case "close":
+      return [[], null];
+    case "runEffect":
+      return [[], msg.run];
+  }
+}
+function stopRevealTimerAndPlaceholder() {
   if (revealTimer) {
     revealTimer.stop();
     revealTimer = null;
   }
   for (const timer of animTimers) timer.stop();
   animTimers.clear();
-  canvas2?.destroy();
-  canvas2 = null;
   placeholderCanvas?.destroy();
   placeholderCanvas = null;
-  tap?.stop();
-  tap = null;
-  mouseTap?.stop();
-  mouseTap = null;
-  hs.application.off("didActivate", onDidActivate);
-  if (watchedAppElement) {
-    hs.ax.off(
-      watchedAppElement,
-      "focusedWindowChanged",
-      onFocusedWindowChanged
-    );
-    watchedAppElement = null;
+}
+function dispatch(msg) {
+  const [next, cmd] = update(model, msg);
+  const prevTop = model[model.length - 1];
+  const nextTop = next[next.length - 1];
+  if (nextTop !== prevTop) {
+    mounted?.hide();
+    mounted = nextTop ? mountScene(nextTop, next.length > 1) : null;
   }
-  stack = [];
-  revealed = false;
+  if (next.length === 0) {
+    stopRevealTimerAndPlaceholder();
+    revealed = false;
+  }
+  model = next;
+  if (cmd) hs.timer.doAfter(0, cmd);
+}
+function mountScene(scene, canGoBack) {
+  return scene.kind === "menu" ? mountMenu(scene.options, scene.breadcrumb) : mountChooserScene(scene.spec, canGoBack);
+}
+function mountMenu(options, breadcrumb) {
+  if (revealed) renderMenu(options, breadcrumb);
+  bindKeys(options, breadcrumb);
+  startFocusWatcher();
+  startMouseWatcher();
+  return {
+    hide: () => {
+      tap?.stop();
+      tap = null;
+      mouseTap?.stop();
+      mouseTap = null;
+      stopFocusWatcher();
+      canvas2?.destroy();
+      canvas2 = null;
+    }
+  };
+}
+function mountChooserScene(spec8, canGoBack) {
+  stopRevealTimerAndPlaceholder();
+  revealed = true;
+  return mountChooser(
+    spec8,
+    () => dispatch({ type: "close" }),
+    (nextSpec) => dispatch({ type: "openChooser", spec: nextSpec }),
+    canGoBack ? () => dispatch({ type: "back" }) : void 0
+  );
 }
 function cancelRevealTimer() {
   if (revealTimer) {
@@ -321,11 +628,6 @@ function runShellCommand(path, args) {
   const task = hs.task.create(path, args, null, null, null);
   task.start();
 }
-function pushAndRenderSubmenu(submenuOptions, newBreadcrumb) {
-  stack.push({ options: submenuOptions, breadcrumb: newBreadcrumb });
-  if (revealed) renderMenu(submenuOptions, newBreadcrumb);
-  bindKeys(submenuOptions, newBreadcrumb);
-}
 function selectOption(opt, breadcrumb) {
   const action = opt.action;
   switch (action.kind) {
@@ -334,31 +636,49 @@ function selectOption(opt, breadcrumb) {
       const resolved = typeof action.submenu === "function" ? action.submenu() : action.submenu;
       if (resolved instanceof Promise) {
         void resolved.then(
-          (items) => pushAndRenderSubmenu(items, newBreadcrumb)
+          (options) => dispatch({ type: "openSubmenu", options, breadcrumb: newBreadcrumb })
         );
       } else {
-        pushAndRenderSubmenu(resolved, newBreadcrumb);
+        dispatch({
+          type: "openSubmenu",
+          options: resolved,
+          breadcrumb: newBreadcrumb
+        });
+      }
+      break;
+    }
+    case "chooser": {
+      const resolved = action.spec();
+      if (resolved instanceof Promise) {
+        void resolved.then((spec8) => dispatch({ type: "openChooser", spec: spec8 }));
+      } else {
+        dispatch({ type: "openChooser", spec: resolved });
       }
       break;
     }
     case "app":
-      closeMenu("app launched");
-      hs.timer.doAfter(0, async () => {
-        await hs.application.launchOrFocus(action.bundleID);
-        hs.application.matchingBundleID(action.bundleID)?.activate();
+      dispatch({
+        type: "runEffect",
+        run: async () => {
+          await hs.application.launchOrFocus(action.bundleID);
+          hs.application.matchingBundleID(action.bundleID)?.activate();
+        }
       });
       break;
     case "cmd":
-      closeMenu("cmd started");
-      runShellCommand(action.path, action.args ?? []);
+      dispatch({
+        type: "runEffect",
+        run: () => runShellCommand(action.path, action.args ?? [])
+      });
       break;
     case "url":
-      closeMenu("url opened");
-      hs.urlevent.openURL(action.url);
+      dispatch({
+        type: "runEffect",
+        run: () => hs.urlevent.openURL(action.url)
+      });
       break;
     case "callback":
-      closeMenu("callback called");
-      hs.timer.doAfter(0, action.run);
+      dispatch({ type: "runEffect", run: action.run });
       break;
   }
 }
@@ -441,7 +761,8 @@ function revealMenu() {
       duration: SPLIT_TRANSITION_DURATION
     });
   }
-  const top = stack[stack.length - 1];
+  const top = model[model.length - 1];
+  if (!top || top.kind !== "menu") return;
   renderMenu(top.options, top.breadcrumb, { entering: true });
 }
 function renderMenu(options, breadcrumb, opts = {}) {
@@ -589,24 +910,17 @@ function renderMenu(options, breadcrumb, opts = {}) {
 function bindKeys(options, breadcrumb) {
   tap?.stop();
   tap = hs.eventtap.addWatcher(
-    [KEY_DOWN],
+    [KEY_DOWN2],
     (event) => {
       armRevealTimer();
       const codeMap = hs.keycodes.map;
       const keyName = String(codeMap[String(event.keyCode)] ?? "");
       if (keyName === "escape") {
-        closeMenu("esc pressed");
+        dispatch({ type: "close" });
         return hs.eventtap.consume;
       }
       if (keyName === "delete") {
-        if (stack.length <= 1) {
-          closeMenu("backspace at root");
-        } else {
-          stack.pop();
-          const parent = stack[stack.length - 1];
-          if (revealed) renderMenu(parent.options, parent.breadcrumb);
-          bindKeys(parent.options, parent.breadcrumb);
-        }
+        dispatch({ type: "back" });
         return hs.eventtap.consume;
       }
       const pressed = event.characters ?? "";
@@ -624,7 +938,7 @@ function bindKeys(options, breadcrumb) {
     hs.ui.alert(
       "Leader menu: eventtap failed to start \u2014 check Accessibility permissions"
     ).show();
-    closeMenu("listening failed to start");
+    dispatch({ type: "close" });
     return;
   }
   tap.start();
@@ -642,25 +956,18 @@ function startMouseWatcher() {
     [LEFT_MOUSE_DOWN, RIGHT_MOUSE_DOWN, OTHER_MOUSE_DOWN],
     (event) => {
       const loc = event.location;
-      if (!withinCanvas(loc)) closeMenu("click outside");
+      if (!withinCanvas(loc)) dispatch({ type: "close" });
       return hs.eventtap.emit;
     },
     false
   );
   mouseTap?.start();
 }
-function startFocusWatcher() {
-  hs.application.on("didActivate", onDidActivate);
-  watchAppElement(hs.application.frontmost());
-}
 function show(menuTree2) {
   showStartMs = nowMs();
-  closeMenu("close at the start");
-  stack = [{ options: menuTree2, breadcrumb: [] }];
+  dispatch({ type: "close" });
   showPlaceholderInitial();
-  bindKeys(menuTree2, []);
-  startMouseWatcher();
-  startFocusWatcher();
+  dispatch({ type: "openSubmenu", options: menuTree2, breadcrumb: [] });
   armRevealTimer();
 }
 
@@ -16310,201 +16617,6 @@ var data_by_emoji_default = {
   }
 };
 
-// chooser-options-bar.ts
-var KEY_DOWN2 = hs.eventtap.eventTypes["keyDown"];
-var POLL_INTERVAL_SECONDS = 0.1;
-var BOTTOM_MARGIN_PX = 24;
-var CHIP_PADDING_X = 7;
-var CHIP_LABEL_GAP = 6;
-var PAIR_GAP = 20;
-var BAR_HEIGHT = Theme.paddingY * 2 + Theme.fontSize * Theme.textFrameHeightMultiplier;
-var CHIP_HEIGHT = Theme.fontSize + 10;
-var BOLD_RULER_INDEX = 0;
-var REGULAR_RULER_INDEX = 1;
-var MOD_SYMBOLS = {
-  cmd: "\u2318",
-  shift: "\u21E7",
-  alt: "\u2325",
-  ctrl: "\u2303",
-  fn: "fn"
-};
-var KEY_SYMBOLS = {
-  return: "\u21B5",
-  delete: "\u232B",
-  escape: "\u238B",
-  tab: "\u21E5",
-  space: "\u2423"
-};
-function keyDisplay(key) {
-  return KEY_SYMBOLS[key] ?? key.toUpperCase();
-}
-var GENERIC_MODS = ["cmd", "shift", "alt", "ctrl", "fn"];
-function genericMods(flags) {
-  return new Set(flags.filter((f) => GENERIC_MODS.includes(f)));
-}
-function modsMatch(required, present) {
-  return required.length === present.size && required.every((m) => present.has(m));
-}
-var CONTROL_KEYCODES = {
-  return: 36,
-  tab: 48,
-  space: 49,
-  delete: 51,
-  escape: 53
-};
-function keyMatches(optKey, event, keyName) {
-  const controlCode = CONTROL_KEYCODES[optKey];
-  if (controlCode !== void 0) return event.keyCode === controlCode;
-  if (optKey === keyName) return true;
-  return event.characters === optKey;
-}
-function chipGlyph(opt) {
-  if (opt.mods && opt.key)
-    return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
-  return opt.keyGlyph ?? "";
-}
-function barRect(width) {
-  const sf = hs.screen.primary().frame;
-  return {
-    x: sf.x + (sf.w - width) / 2,
-    y: sf.y + sf.h - BAR_HEIGHT - BOTTOM_MARGIN_PX,
-    w: width,
-    h: BAR_HEIGHT
-  };
-}
-function rulerElements() {
-  return [
-    Canvas.text("", {
-      textWeight: "bold",
-      textSize: Theme.fontSize,
-      frame: { x: 0, y: 0, w: 1, h: 1 }
-    }),
-    Canvas.text("", {
-      textSize: Theme.fontSize,
-      frame: { x: 0, y: 0, w: 1, h: 1 }
-    })
-  ];
-}
-function backgroundElement() {
-  return Canvas.rectangle("strokeAndFill", {
-    fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
-    strokeColor: canvasColor(Theme.border),
-    strokeWidth: Theme.borderWidth,
-    roundedRectRadii: cornerRadii(Theme.cornerRadius)
-  });
-}
-function buildBarCanvas() {
-  const c = hs.canvas.create(flipFrameY(barRect(200)));
-  c.appendElements([...rulerElements(), backgroundElement()]);
-  c.levelValue(hs.canvas.windowLevels["overlay"]);
-  c.clickActivating(false);
-  return c;
-}
-function render(bar, options) {
-  const rowTextH = Theme.fontSize * Theme.textFrameHeightMultiplier;
-  const segments2 = options.map((opt) => {
-    const glyph = chipGlyph(opt);
-    const chipTextSize = glyph ? bar.minimumTextSize(BOLD_RULER_INDEX, glyph) : { w: 0, h: 0 };
-    const labelSize = bar.minimumTextSize(REGULAR_RULER_INDEX, opt.label);
-    const chipW = glyph ? chipTextSize.w + CHIP_PADDING_X * 2 : 0;
-    const pairW = chipW + (chipW ? CHIP_LABEL_GAP : 0) + labelSize.w;
-    return { opt, glyph, chipW, labelW: labelSize.w, pairW };
-  });
-  const contentW = segments2.reduce((sum, s) => sum + s.pairW, 0) + Math.max(0, segments2.length - 1) * PAIR_GAP;
-  const maxW = hs.screen.primary().frame.w * 0.9;
-  const barWidth = Math.min(contentW + Theme.paddingX * 2, maxW);
-  bar.setFrame(flipFrameY(barRect(barWidth)));
-  const elements = [...rulerElements(), backgroundElement()];
-  const chipY = (BAR_HEIGHT - CHIP_HEIGHT) / 2;
-  const labelY = (BAR_HEIGHT - rowTextH) / 2;
-  let x = Theme.paddingX;
-  segments2.forEach((seg, i) => {
-    if (seg.chipW) {
-      elements.push(
-        Canvas.rectangle("fill", {
-          fillColor: canvasColor(Theme.surface),
-          roundedRectRadii: cornerRadii(Theme.keyChipRadius),
-          frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
-        })
-      );
-      elements.push(
-        Canvas.text(seg.glyph, {
-          textColor: canvasColor(Theme.text),
-          textWeight: "bold",
-          textSize: Theme.fontSize,
-          textAlignment: "center",
-          frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
-        })
-      );
-      x += seg.chipW + CHIP_LABEL_GAP;
-    }
-    elements.push(
-      Canvas.text(seg.opt.label, {
-        textColor: canvasColor(Theme.textDim),
-        textSize: Theme.fontSize,
-        frame: { x, y: labelY, w: seg.labelW + 2, h: rowTextH }
-      })
-    );
-    x += seg.labelW;
-    if (i < segments2.length - 1) x += PAIR_GAP;
-  });
-  bar.replaceElements(elements);
-  bar.show();
-}
-function attachOptionsBar(chooser7, getOptionsForRow) {
-  let bar = null;
-  let pollTimer = null;
-  let tap2 = null;
-  let lastRow = null;
-  let currentOptions;
-  function renderCurrent() {
-    if (!currentOptions || currentOptions.length === 0) {
-      bar?.destroy();
-      bar = null;
-      return;
-    }
-    if (!bar) bar = buildBarCanvas();
-    render(bar, currentOptions);
-  }
-  function tick() {
-    const row = chooser7.selectedRowContents(null);
-    if (row === lastRow) return;
-    lastRow = row;
-    currentOptions = row ? getOptionsForRow(row) : void 0;
-    renderCurrent();
-  }
-  function onKeyDown(event) {
-    if (!currentOptions) return hs.eventtap.emit;
-    const codeMap = hs.keycodes.map;
-    const keyName = String(codeMap[String(event.keyCode)] ?? "");
-    const flags = genericMods(event.flags);
-    for (const opt of currentOptions) {
-      if (!opt.key || !opt.run) continue;
-      if (keyMatches(opt.key, event, keyName) && modsMatch(opt.mods ?? [], flags)) {
-        opt.run();
-        return hs.eventtap.consume;
-      }
-    }
-    return hs.eventtap.emit;
-  }
-  chooser7.onShow = () => {
-    lastRow = null;
-    tick();
-    pollTimer = hs.timer.create(POLL_INTERVAL_SECONDS, tick);
-    pollTimer.start();
-    tap2 = hs.eventtap.addWatcher([KEY_DOWN2], onKeyDown, false);
-    tap2?.start();
-  };
-  chooser7.onHide = () => {
-    pollTimer?.stop();
-    pollTimer = null;
-    tap2?.stop();
-    tap2 = null;
-    bar?.destroy();
-    bar = null;
-  };
-}
-
 // emoji-picker.ts
 var FREQUENCY_KEY = "emojiPicker.frequency";
 var FREQUENT_PIN_COUNT = 12;
@@ -16545,14 +16657,12 @@ function emojiImage(char) {
   imageCache.set(char, image2);
   return image2;
 }
-var chooser = null;
 var allChoices = [];
 function loadFrequency() {
   return hs.userdefaults.get(FREQUENCY_KEY) ?? {};
 }
 function onSelect(choice, previouslyFocused) {
-  if (!choice) return;
-  const char = choice["char"];
+  const char = choice.char;
   hs.timer.doAfter(0, () => {
     previouslyFocused?.focus();
     const savedClipboard = hs.pasteboard.readString();
@@ -16575,22 +16685,8 @@ function loadDataset() {
     image: emojiImage(char)
   }));
 }
-function ensureLoaded() {
-  if (chooser) return;
-  allChoices = loadDataset();
-  chooser = hs.chooser.create();
-  chooser.visibleRows = 9;
-  chooser.width = 0.3;
-  chooser.searchSubText = true;
-  chooser.placeholder = "Search emoji\u2026";
-  chooser.backgroundColor = chooserColor(Theme.background);
-  chooser.borderColor = chooserColor(Theme.border);
-  chooser.cornerRadius = Theme.cornerRadius;
-  chooser.textColor = chooserColor(Theme.text);
-  chooser.subTextColor = chooserColor(Theme.textDim);
-  attachOptionsBar(chooser, (row) => emojiOptions(row["char"]));
-}
 function buildRankedChoices() {
+  if (allChoices.length === 0) allChoices = loadDataset();
   const freq = loadFrequency();
   const frequent = allChoices.filter((c) => (freq[c.char] ?? 0) > 0);
   const rest = allChoices.filter((c) => (freq[c.char] ?? 0) <= 0);
@@ -16601,19 +16697,20 @@ function buildRankedChoices() {
     ...frequent.slice(FREQUENT_PIN_COUNT)
   ];
 }
-function show2() {
-  ensureLoaded();
-  const c = chooser;
+function spec() {
   const previouslyFocused = hs.window.focusedWindow();
-  c.onSelect = (choice) => onSelect(choice, previouslyFocused);
-  c.setChoices(buildRankedChoices());
-  c.query = "";
-  c.show();
+  return {
+    choices: buildRankedChoices(),
+    visibleRows: 9,
+    width: 0.3,
+    searchSubText: true,
+    placeholder: "Search emoji\u2026",
+    onSelect: (choice) => onSelect(choice, previouslyFocused),
+    optionsBar: (row) => emojiOptions(row.char)
+  };
 }
 
 // menu-item-search.ts
-var chooser2 = null;
-var currentApp = null;
 function flatten(items, ancestorTitles, out) {
   for (const item of items ?? []) {
     const title = item.title;
@@ -16629,37 +16726,31 @@ function flatten(items, ancestorTitles, out) {
     }
   }
 }
-function ensureLoaded2() {
-  if (chooser2) return;
-  chooser2 = hs.chooser.create();
-  chooser2.visibleRows = 9;
-  chooser2.width = 0.35;
-  chooser2.searchSubText = true;
-  chooser2.placeholder = "Filter by menu item title\u2026";
-  chooser2.backgroundColor = chooserColor(Theme.background);
-  chooser2.borderColor = chooserColor(Theme.border);
-  chooser2.cornerRadius = Theme.cornerRadius;
-  chooser2.textColor = chooserColor(Theme.text);
-  chooser2.subTextColor = chooserColor(Theme.textDim);
-  chooser2.onSelect = (choice) => {
-    if (choice && currentApp) currentApp.selectMenuItemByPath(choice["path"]);
-  };
+function informationalSpec(message) {
+  return eraseChooser({
+    choices: [{ text: message }],
+    onSelect: () => {
+    }
+  });
 }
-function show3() {
+function spec2() {
   const app = hs.application.frontmost();
-  if (!app) return;
-  currentApp = app;
-  ensureLoaded2();
+  if (!app) return informationalSpec("No frontmost app");
   hs.ui.alert("Loading menu items\u2026").duration(1).show();
   const menuItems = app.getMenuItems();
-  if (!menuItems) return;
   const choices = [];
-  flatten(menuItems.slice(1), [], choices);
-  if (choices.length === 0) return;
-  const c = chooser2;
-  c.setChoices(choices);
-  c.query = "";
-  c.show();
+  if (menuItems) flatten(menuItems.slice(1), [], choices);
+  if (choices.length === 0) return informationalSpec("No menu items found");
+  return eraseChooser({
+    choices,
+    visibleRows: 9,
+    width: 0.35,
+    searchSubText: true,
+    placeholder: "Filter by menu item title\u2026",
+    onSelect: (choice) => {
+      app.selectMenuItemByPath(choice.path);
+    }
+  });
 }
 
 // app-picker.ts
@@ -16669,17 +16760,7 @@ var APP_DIRS = [
   "/System/Applications/Utilities",
   hs.fs.homeDirectory() + "/Applications"
 ];
-var chooser3 = null;
 var allChoices2 = [];
-function styleChooser(c) {
-  c.width = 0.3;
-  c.backgroundColor = chooserColor(Theme.background);
-  c.borderColor = chooserColor(Theme.border);
-  c.cornerRadius = Theme.cornerRadius;
-  c.textColor = chooserColor(Theme.text);
-  c.subTextColor = chooserColor(Theme.textMuted);
-  c.selectionColor = chooserColor(Theme.selectionBack);
-}
 function bundleIDForPath(path) {
   const info = hs.plist.fromFile(`${path}/Contents/Info.plist`);
   const id = info?.["CFBundleIdentifier"];
@@ -16689,44 +16770,39 @@ function focusWindow(win) {
   if (win.isMinimized) win.unminimize();
   win.focus();
 }
-function showWindowChooser(windows) {
-  const c = hs.chooser.create();
-  styleChooser(c);
-  c.visibleRows = Math.min(windows.length, 9);
-  c.placeholder = "Choose window\u2026";
-  c.setChoices(
-    windows.map((win) => ({
+function windowChooserSpec(windows) {
+  return {
+    visibleRows: Math.min(windows.length, 9),
+    placeholder: "Choose window\u2026",
+    choices: windows.map((win, winIndex) => ({
       text: win.title || "Untitled",
-      winIndex: windows.indexOf(win)
-    }))
-  );
-  c.onSelect = (choice) => {
-    if (!choice) return;
-    const win = windows[choice["winIndex"]];
-    if (win) hs.timer.doAfter(0, () => focusWindow(win));
+      winIndex
+    })),
+    onSelect: (choice) => {
+      const win = windows[choice.winIndex];
+      if (win) hs.timer.doAfter(0, () => focusWindow(win));
+    }
   };
-  c.show();
 }
 async function activateApp(bundleID) {
   await hs.application.launchOrFocus(bundleID);
   hs.application.matchingBundleID(bundleID)?.activate();
 }
 function onSelect2(choice) {
-  if (!choice) return;
-  const path = choice["path"];
-  hs.timer.doAfter(0, async () => {
-    const bundleID = bundleIDForPath(path);
-    if (!bundleID) return;
-    const app = hs.application.matchingBundleID(bundleID);
-    const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
-    if (windows.length === 1) {
-      focusWindow(windows[0]);
-    } else if (windows.length > 1) {
-      showWindowChooser(windows);
-    } else {
-      await activateApp(bundleID);
-    }
-  });
+  const bundleID = bundleIDForPath(choice.path);
+  if (!bundleID) return;
+  const app = hs.application.matchingBundleID(bundleID);
+  const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
+  if (windows.length === 1) {
+    const win = windows[0];
+    hs.timer.doAfter(0, () => focusWindow(win));
+    return;
+  }
+  if (windows.length > 1) {
+    return eraseChooser(windowChooserSpec(windows));
+  }
+  hs.timer.doAfter(0, () => void activateApp(bundleID));
+  return;
 }
 function scanApps() {
   const choices = [];
@@ -16752,27 +16828,19 @@ function scanApps() {
   choices.sort((a, b) => a.text.localeCompare(b.text));
   return choices;
 }
-function ensureLoaded3() {
-  if (chooser3) return;
-  allChoices2 = scanApps();
-  chooser3 = hs.chooser.create();
-  styleChooser(chooser3);
-  chooser3.visibleRows = 9;
-  chooser3.searchSubText = true;
-  chooser3.placeholder = "Open or focus app\u2026";
-  chooser3.onSelect = onSelect2;
-}
-function show4() {
-  ensureLoaded3();
-  const c = chooser3;
-  c.setChoices(allChoices2);
-  c.query = "";
-  c.show();
+function spec3() {
+  if (allChoices2.length === 0) allChoices2 = scanApps();
+  return {
+    choices: allChoices2,
+    visibleRows: 9,
+    searchSubText: true,
+    placeholder: "Open or focus app\u2026",
+    onSelect: onSelect2
+  };
 }
 
 // app-switcher.ts
-var chooser4 = null;
-function optionsFor(app) {
+function optionsFor(app, chooser) {
   const bundleID = app.bundleID;
   const name = app.title ?? bundleID;
   return [
@@ -16782,7 +16850,7 @@ function optionsFor(app) {
       label: `Quit ${name}`,
       run: () => {
         hs.application.matchingBundleID(bundleID)?.kill();
-        chooser4?.hide();
+        chooser.hide();
       }
     },
     {
@@ -16791,7 +16859,7 @@ function optionsFor(app) {
       label: `Hide ${name}`,
       run: () => {
         hs.application.matchingBundleID(bundleID)?.hide();
-        chooser4?.hide();
+        chooser.hide();
       }
     }
   ];
@@ -16815,39 +16883,31 @@ function listRunningApps() {
   return choices;
 }
 function onSelect3(choice) {
-  if (!choice) return;
-  const bundleID = choice["bundleID"];
-  hs.timer.doAfter(0, async () => {
-    const app = hs.application.matchingBundleID(bundleID);
-    const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
-    if (windows.length === 1) {
-      focusWindow(windows[0]);
-    } else if (windows.length > 1) {
-      showWindowChooser(windows);
-    } else {
-      await activateApp(bundleID);
+  const app = hs.application.matchingBundleID(choice.bundleID);
+  const windows = app?.allWindows.filter((w) => w.isStandard) ?? [];
+  if (windows.length === 1) {
+    const win = windows[0];
+    hs.timer.doAfter(0, () => focusWindow(win));
+    return;
+  }
+  if (windows.length > 1) {
+    return eraseChooser(windowChooserSpec(windows));
+  }
+  hs.timer.doAfter(0, () => void activateApp(choice.bundleID));
+  return;
+}
+function spec4() {
+  return {
+    choices: listRunningApps(),
+    visibleRows: 9,
+    searchSubText: true,
+    placeholder: "Switch to app\u2026",
+    onSelect: onSelect3,
+    optionsBar: (row, chooser) => {
+      const app = hs.application.matchingBundleID(row.bundleID);
+      return app ? optionsFor(app, chooser) : void 0;
     }
-  });
-}
-function ensureLoaded4() {
-  if (chooser4) return;
-  chooser4 = hs.chooser.create();
-  styleChooser(chooser4);
-  chooser4.visibleRows = 9;
-  chooser4.searchSubText = true;
-  chooser4.placeholder = "Switch to app\u2026";
-  chooser4.onSelect = onSelect3;
-  attachOptionsBar(chooser4, (row) => {
-    const app = hs.application.matchingBundleID(row["bundleID"]);
-    return app ? optionsFor(app) : void 0;
-  });
-}
-function show5() {
-  ensureLoaded4();
-  const c = chooser4;
-  c.setChoices(listRunningApps());
-  c.query = "";
-  c.show();
+  };
 }
 
 // clipboard-history.ts
@@ -16864,7 +16924,6 @@ var CONCEALED_TYPES = [
 ];
 var history = [];
 var lastChangeCount = -1;
-var chooser5 = null;
 var iconCache = /* @__PURE__ */ new Map();
 function isConcealed() {
   return CONCEALED_TYPES.some((uti) => hs.pasteboard.hasType(uti));
@@ -16997,7 +17056,6 @@ function clear() {
   history = [];
   saveHistory();
   hs.ui.alert("Clipboard history cleared").duration(1).show();
-  chooser5?.refreshChoices();
 }
 var VALID_TAGS = /* @__PURE__ */ new Set(["text", "url", "file", "image", "pinned"]);
 function parseQuery(query) {
@@ -17076,7 +17134,7 @@ function searchableText(entry) {
   const body = entry.kind === "image" ? entry.path?.match(/[^/]+$/)?.[0] ?? "" : entry.text ?? "";
   return [body, entry.source?.name ?? "", formattedTime(entry), entry.kind].join(" ");
 }
-function entryOptions(entry) {
+function entryOptions(entry, chooser) {
   const options = [
     { keyGlyph: "\u23CE", label: "Paste" },
     {
@@ -17085,7 +17143,7 @@ function entryOptions(entry) {
       label: "Copy",
       run: () => {
         restoreEntry(entry);
-        chooser5?.hide();
+        chooser.hide();
       }
     },
     {
@@ -17096,7 +17154,7 @@ function entryOptions(entry) {
         entry.pinned = !entry.pinned;
         saveHistory();
         hs.ui.alert(entry.pinned ? "Pinned" : "Unpinned").duration(0.6).show();
-        chooser5?.refreshChoices();
+        chooser.refreshChoices();
       }
     },
     {
@@ -17110,7 +17168,7 @@ function entryOptions(entry) {
           history.splice(i, 1);
         }
         saveHistory();
-        chooser5?.refreshChoices();
+        chooser.refreshChoices();
       }
     }
   ];
@@ -17140,44 +17198,28 @@ function buildChoices(query) {
   }));
 }
 function onSelect4(choice, previouslyFocused) {
-  if (!choice) return;
-  const entry = history[choice["index"]];
+  const entry = history[choice.index];
   if (!entry) return;
   hs.timer.doAfter(0, () => {
     previouslyFocused?.focus();
     paste(entry);
   });
 }
-function ensureLoaded5() {
-  if (chooser5) return;
-  chooser5 = hs.chooser.create();
-  chooser5.visibleRows = 10;
-  chooser5.width = 0.45;
-  chooser5.searchSubText = true;
-  chooser5.placeholder = "Search content, app, date\u2026 or :image / :url / :file / :pinned";
-  chooser5.backgroundColor = chooserColor(Theme.background);
-  chooser5.borderColor = chooserColor(Theme.border);
-  chooser5.cornerRadius = Theme.cornerRadius;
-  chooser5.textColor = chooserColor(Theme.text);
-  chooser5.subTextColor = chooserColor(Theme.textDim);
-  chooser5.setChoices(buildChoices);
-  attachOptionsBar(chooser5, (row) => {
-    const entry = history[row["index"]];
-    return entry ? entryOptions(entry) : void 0;
-  });
-}
-function show6() {
-  ensureLoaded5();
-  const c = chooser5;
+function spec5() {
   checkPasteboard();
-  if (history.length === 0) {
-    hs.ui.alert("Clipboard history is empty").duration(1).show();
-    return;
-  }
   const previouslyFocused = hs.window.focusedWindow();
-  c.onSelect = (choice) => onSelect4(choice, previouslyFocused);
-  c.query = "";
-  c.show();
+  return {
+    visibleRows: 10,
+    width: 0.45,
+    searchSubText: true,
+    placeholder: history.length === 0 ? "Clipboard history is empty" : "Search content, app, date\u2026 or :image / :url / :file / :pinned",
+    choices: buildChoices,
+    onSelect: (choice) => onSelect4(choice, previouslyFocused),
+    optionsBar: (row, chooser) => {
+      const entry = history[row.index];
+      return entry ? entryOptions(entry, chooser) : void 0;
+    }
+  };
 }
 hs.fs.mkdir(DATA_DIR);
 hs.fs.mkdir(IMAGE_DIR);
@@ -17240,31 +17282,22 @@ async function killProcess(pid, signal) {
   }
   await hs.task.shell(`kill ${signal === "KILL" ? "-KILL" : "-TERM"} ${pid}`, {});
 }
-function styleChooser2(c) {
-  c.width = 0.35;
-  c.backgroundColor = chooserColor(Theme.background);
-  c.borderColor = chooserColor(Theme.border);
-  c.cornerRadius = Theme.cornerRadius;
-  c.textColor = chooserColor(Theme.text);
-  c.subTextColor = chooserColor(Theme.textDim);
-}
-function showLevelChooser(pids, byPid) {
+function levelSpec(pids, byPid) {
   const records = pids.map((pid) => byPid.get(pid)).filter((r) => r !== void 0);
   records.sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0));
-  const c = hs.chooser.create();
-  styleChooser2(c);
-  c.visibleRows = 9;
-  c.searchSubText = true;
-  c.placeholder = "Browse processes\u2026";
-  c.setChoices(records.map(processRow));
-  c.onSelect = (choice) => {
-    if (!choice) return;
-    const record = byPid.get(choice["pid"]);
-    if (record) showActionsChooser(record, byPid);
+  return {
+    visibleRows: 9,
+    width: 0.35,
+    searchSubText: true,
+    placeholder: "Browse processes\u2026",
+    choices: records.map(processRow),
+    onSelect: (choice) => {
+      const record = byPid.get(choice.pid);
+      return record ? eraseChooser(actionsSpec(record, byPid)) : void 0;
+    }
   };
-  c.show();
 }
-function showActionsChooser(record, byPid) {
+function actionsSpec(record, byPid) {
   const name = record.comm.match(/([^/]+)$/)?.[1] ?? record.comm;
   const choices = [
     { text: "Kill (SIGTERM)", subText: `Ask ${name} (pid ${record.pid}) to quit`, kind: "term" },
@@ -17273,22 +17306,22 @@ function showActionsChooser(record, byPid) {
   if (record.children.length > 0) {
     choices.push({ text: `View ${record.children.length} children \u2192`, subText: name, kind: "children" });
   }
-  const c = hs.chooser.create();
-  styleChooser2(c);
-  c.visibleRows = Math.min(choices.length, 9);
-  c.placeholder = name;
-  c.setChoices(choices);
-  c.onSelect = (choice) => {
-    if (!choice) return;
-    if (choice["kind"] === "term") void killProcess(record.pid, "TERM");
-    else if (choice["kind"] === "kill") void killProcess(record.pid, "KILL");
-    else if (choice["kind"] === "children") showLevelChooser(record.children, byPid);
+  return {
+    visibleRows: Math.min(choices.length, 9),
+    width: 0.35,
+    placeholder: name,
+    choices,
+    onSelect: (choice) => {
+      if (choice.kind === "term") void killProcess(record.pid, "TERM");
+      else if (choice.kind === "kill") void killProcess(record.pid, "KILL");
+      else if (choice.kind === "children") return eraseChooser(levelSpec(record.children, byPid));
+      return void 0;
+    }
   };
-  c.show();
 }
-async function show7() {
+async function spec6() {
   const byPid = await parseProcesses();
-  showLevelChooser(rootPids(byPid), byPid);
+  return eraseChooser(levelSpec(rootPids(byPid), byPid));
 }
 
 // daily-note.ts
@@ -17313,43 +17346,29 @@ function appendToDailyNote(text2) {
   hs.fs.append(path, trimmed + "\n");
   hs.ui.alert("Appended to daily note").duration(0.6).show();
 }
-var chooser6 = null;
-function ensureChooser() {
-  if (chooser6) return;
-  chooser6 = hs.chooser.create();
-  chooser6.width = 0.35;
-  chooser6.visibleRows = 1;
-  chooser6.placeholder = "Type a quick note\u2026";
-  chooser6.backgroundColor = chooserColor(Theme.background);
-  chooser6.borderColor = chooserColor(Theme.border);
-  chooser6.cornerRadius = Theme.cornerRadius;
-  chooser6.textColor = chooserColor(Theme.text);
-  chooser6.subTextColor = chooserColor(Theme.textDim);
-  chooser6.queryColor = chooserColor(Theme.text);
-  chooser6.placeholderColor = chooserColor(Theme.textDim);
-  chooser6.setChoices((query) => [
-    { text: query ? `Append: ${query}` : "Type a note, then press \u23CE to append" }
-  ]);
-  chooser6.onQueryChange = () => chooser6.refreshChoices();
-  chooser6.onSelect = () => appendToDailyNote(chooser6.query);
-  attachOptionsBar(chooser6, () => [
-    {
-      mods: ["cmd"],
-      key: "return",
-      label: "Append to daily note",
-      run: () => {
-        const text2 = chooser6.query;
-        chooser6.hide();
-        appendToDailyNote(text2);
+function spec7() {
+  return {
+    width: 0.35,
+    visibleRows: 1,
+    placeholder: "Type a quick note\u2026",
+    choices: (query) => [
+      { text: query ? `Append: ${query}` : "Type a note, then press \u23CE to append" }
+    ],
+    // Plain Enter confirms the row -- appends the current query.
+    onSelect: (_choice, chooser) => appendToDailyNote(chooser.query),
+    optionsBar: (_row, chooser) => [
+      {
+        mods: ["cmd"],
+        key: "return",
+        label: "Append to daily note",
+        run: () => {
+          const text2 = chooser.query;
+          chooser.hide();
+          appendToDailyNote(text2);
+        }
       }
-    }
-  ]);
-}
-function show8() {
-  ensureChooser();
-  const c = chooser6;
-  c.query = "";
-  c.show();
+    ]
+  };
 }
 
 // key-labels.ts
@@ -17754,7 +17773,7 @@ var menuTree = [
     key: "E",
     label: "Pick emoji (native)",
     icon: symbol("face.smiling"),
-    action: { kind: "callback", run: () => show2() }
+    action: { kind: "chooser", spec: () => eraseChooser(spec()) }
   },
   {
     key: "d",
@@ -17780,31 +17799,31 @@ var menuTree = [
     key: "m",
     label: "Search menu items",
     icon: symbol("menucard"),
-    action: { kind: "callback", run: () => show3() }
+    action: { kind: "chooser", spec: () => spec2() }
   },
   {
     key: "/",
     label: "Open or focus app",
     icon: symbol("magnifyingglass"),
-    action: { kind: "callback", run: () => show4() }
+    action: { kind: "chooser", spec: () => eraseChooser(spec3()) }
   },
   {
     key: " ",
     label: "Switch app",
     icon: symbol("rectangle.stack"),
-    action: { kind: "callback", run: () => show5() }
+    action: { kind: "chooser", spec: () => eraseChooser(spec4()) }
   },
   {
     key: "v",
     label: "Clipboard history",
     icon: symbol("doc.on.clipboard"),
-    action: { kind: "callback", run: () => show6() }
+    action: { kind: "chooser", spec: () => eraseChooser(spec5()) }
   },
   {
     key: "p",
     label: "Process explorer",
     icon: symbol("cpu"),
-    action: { kind: "callback", run: () => void show7() }
+    action: { kind: "chooser", spec: () => spec6() }
   },
   {
     key: "a",
@@ -17933,7 +17952,7 @@ var menuTree = [
           key: "q",
           label: "Quick note",
           icon: symbol("square.and.pencil"),
-          action: { kind: "callback", run: () => show8() }
+          action: { kind: "chooser", spec: () => eraseChooser(spec7()) }
         },
         {
           key: "c",

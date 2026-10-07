@@ -19,8 +19,8 @@
 // - hs.json.encode/decode doesn't exist here -- this runs as plain
 //   JavaScript, so JSON.stringify/JSON.parse do the same job natively.
 
-import { Theme, chooserColor } from "./nord-theme";
-import { attachOptionsBar, type ChoiceOption } from "./chooser-options-bar";
+import type { ChoiceOption } from "./chooser-options-bar";
+import type { ChooserSpec } from "./chooser-runtime";
 
 const MAX_HISTORY = 100;
 const MAX_TEXT_LENGTH = 1024 * 1024; // 1 MB
@@ -60,7 +60,6 @@ interface ClipEntry {
 
 let history: ClipEntry[] = [];
 let lastChangeCount = -1;
-let chooser: HSChooser | null = null;
 const iconCache = new Map<string, HSImage | null>();
 
 // ============================================================
@@ -229,7 +228,6 @@ export function clear(): void {
 	history = [];
 	saveHistory();
 	hs.ui.alert("Clipboard history cleared").duration(1).show();
-	chooser?.refreshChoices();
 }
 
 // ============================================================
@@ -337,7 +335,7 @@ function searchableText(entry: ClipEntry): string {
 // OPTIONS BAR (replaces the v1 Spoon's right-click context menu)
 // ============================================================
 
-function entryOptions(entry: ClipEntry): ChoiceOption[] {
+function entryOptions(entry: ClipEntry, chooser: HSChooser): ChoiceOption[] {
 	const options: ChoiceOption[] = [
 		{ keyGlyph: "⏎", label: "Paste" },
 		{
@@ -346,7 +344,7 @@ function entryOptions(entry: ClipEntry): ChoiceOption[] {
 			label: "Copy",
 			run: () => {
 				restoreEntry(entry);
-				chooser?.hide();
+				chooser.hide();
 			},
 		},
 		{
@@ -357,7 +355,7 @@ function entryOptions(entry: ClipEntry): ChoiceOption[] {
 				entry.pinned = !entry.pinned;
 				saveHistory();
 				hs.ui.alert(entry.pinned ? "Pinned" : "Unpinned").duration(0.6).show();
-				chooser?.refreshChoices();
+				chooser.refreshChoices();
 			},
 		},
 		{
@@ -371,7 +369,7 @@ function entryOptions(entry: ClipEntry): ChoiceOption[] {
 					history.splice(i, 1);
 				}
 				saveHistory();
-				chooser?.refreshChoices();
+				chooser.refreshChoices();
 			},
 		},
 	];
@@ -389,7 +387,14 @@ function entryOptions(entry: ClipEntry): ChoiceOption[] {
 // CHOOSER
 // ============================================================
 
-function buildChoices(query: string): Record<string, unknown>[] {
+interface ClipRow {
+	text: string;
+	subText: string;
+	image: HSImage | null;
+	index: number;
+}
+
+function buildChoices(query: string): ClipRow[] {
 	const { filter, rest } = parseQuery(query);
 	const matches: { entry: ClipEntry; index: number; score: number }[] = [];
 	history.forEach((entry, index) => {
@@ -408,9 +413,8 @@ function buildChoices(query: string): Record<string, unknown>[] {
 	}));
 }
 
-function onSelect(choice: Record<string, unknown> | null, previouslyFocused: HSWindow | null): void {
-	if (!choice) return;
-	const entry = history[choice["index"] as number];
+function onSelect(choice: ClipRow, previouslyFocused: HSWindow | null): void {
+	const entry = history[choice.index];
 	if (!entry) return;
 	// Deferred for the same reason as every other picker in this config:
 	// onSelect fires mid-hide, so focusing + pasting synchronously here
@@ -421,37 +425,24 @@ function onSelect(choice: Record<string, unknown> | null, previouslyFocused: HSW
 	});
 }
 
-function ensureLoaded(): void {
-	if (chooser) return;
-	chooser = hs.chooser.create();
-	chooser.visibleRows = 10;
-	chooser.width = 0.45;
-	chooser.searchSubText = true;
-	chooser.placeholder = "Search content, app, date… or :image / :url / :file / :pinned";
-	chooser.backgroundColor = chooserColor(Theme.background);
-	chooser.borderColor = chooserColor(Theme.border);
-	chooser.cornerRadius = Theme.cornerRadius;
-	chooser.textColor = chooserColor(Theme.text);
-	chooser.subTextColor = chooserColor(Theme.textDim);
-	chooser.setChoices(buildChoices);
-	attachOptionsBar(chooser, (row) => {
-		const entry = history[row["index"] as number];
-		return entry ? entryOptions(entry) : undefined;
-	});
-}
-
-export function show(): void {
-	ensureLoaded();
-	const c = chooser!;
+export function spec(): ChooserSpec<ClipRow> {
 	checkPasteboard(); // catch anything copied since the last change event
-	if (history.length === 0) {
-		hs.ui.alert("Clipboard history is empty").duration(1).show();
-		return;
-	}
 	const previouslyFocused = hs.window.focusedWindow();
-	c.onSelect = (choice) => onSelect(choice, previouslyFocused);
-	c.query = "";
-	c.show();
+	return {
+		visibleRows: 10,
+		width: 0.45,
+		searchSubText: true,
+		placeholder:
+			history.length === 0
+				? "Clipboard history is empty"
+				: "Search content, app, date… or :image / :url / :file / :pinned",
+		choices: buildChoices,
+		onSelect: (choice) => onSelect(choice, previouslyFocused),
+		optionsBar: (row, chooser) => {
+			const entry = history[row.index];
+			return entry ? entryOptions(entry, chooser) : undefined;
+		},
+	};
 }
 
 // ============================================================
