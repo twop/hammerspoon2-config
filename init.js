@@ -17339,12 +17339,16 @@ function generate(count, single = SINGLE_CHARS) {
 }
 
 // zellij-menu.ts
+var SHELL2 = hs.appinfo.environment.SHELL ?? "/bin/zsh";
+function loginShell(cmd) {
+  return hs.task.shell(`${SHELL2} -l -i -c ${shellQuote(cmd)}`, {});
+}
 async function runLines(cmd) {
-  const { stdout } = await hs.task.shell(cmd, {});
+  const { stdout } = await loginShell(cmd);
   return stdout.split(/\r?\n/).filter((line) => line.length > 0);
 }
 async function runJson(cmd) {
-  const { stdout } = await hs.task.shell(cmd, {});
+  const { stdout } = await loginShell(cmd);
   try {
     return JSON.parse(stdout);
   } catch {
@@ -17352,7 +17356,7 @@ async function runJson(cmd) {
   }
 }
 async function listSessions() {
-  const lines = await runLines("zellij list-sessions --no-formatting");
+  const lines = await runLines(`zellij list-sessions --no-formatting`);
   const sessions = [];
   for (const line of lines) {
     const name = line.match(/^(\S+)/)?.[1];
@@ -17364,11 +17368,11 @@ async function liveSessionNames() {
   return (await listSessions()).filter((s) => !s.exited).map((s) => s.name);
 }
 var currentSession = null;
+var lastSession = null;
 async function detectAttachedSession() {
   for (const name of await liveSessionNames()) {
-    const { exitCode, stdout } = await hs.task.shell(
-      `zellij --session ${shellQuote(name)} action list-clients`,
-      {}
+    const { exitCode, stdout } = await loginShell(
+      `zellij --session ${shellQuote(name)} action list-clients`
     );
     if (exitCode !== 0) continue;
     for (const line of stdout.split(/\r?\n/)) {
@@ -17379,7 +17383,8 @@ async function detectAttachedSession() {
 }
 async function resolveCurrentSession() {
   if (!currentSession) currentSession = await detectAttachedSession();
-  if (!currentSession) hs.ui.alert("Zellij: no session currently attached").show();
+  if (!currentSession)
+    hs.ui.alert("Zellij: no session currently attached").show();
   return currentSession;
 }
 var ALACRITTY_BUNDLE_ID = "io.alacritty";
@@ -17389,10 +17394,10 @@ function focusAlacritty() {
 async function switchToSession(name) {
   const current = await resolveCurrentSession();
   if (current) {
-    await hs.task.shell(
-      `zellij --session ${shellQuote(current)} action switch-session ${shellQuote(name)}`,
-      {}
+    await loginShell(
+      `zellij --session ${shellQuote(current)} action switch-session ${shellQuote(name)}`
     );
+    lastSession = current;
   }
   currentSession = name;
   focusAlacritty();
@@ -17401,7 +17406,10 @@ function capped(list) {
   return list.slice(0, capacity());
 }
 async function sessionsSubmenu() {
-  const names = capped(await liveSessionNames());
+  const current = await resolveCurrentSession();
+  const names = capped(
+    (await liveSessionNames()).filter((name) => name !== current)
+  );
   const labels = generate(names.length);
   return names.map((name, i) => ({
     key: labels[i],
@@ -17409,11 +17417,29 @@ async function sessionsSubmenu() {
     action: { kind: "callback", run: () => void switchToSession(name) }
   }));
 }
+async function switchSessionItem() {
+  const liveNames = await liveSessionNames();
+  const direct = lastSession && lastSession !== currentSession && liveNames.includes(lastSession) ? lastSession : null;
+  if (direct) {
+    return {
+      key: "z",
+      label: `Switch session \u2192 ${direct}`,
+      action: { kind: "callback", run: () => void switchToSession(direct) }
+    };
+  }
+  return {
+    key: "z",
+    label: "Switch session",
+    action: { kind: "submenu", submenu: sessionsSubmenu }
+  };
+}
 async function tabsSubmenu() {
   const current = await resolveCurrentSession();
   if (!current) return [];
   const tabs = capped(
-    await runJson(`zellij --session ${shellQuote(current)} action list-tabs --json`) ?? []
+    await runJson(
+      `zellij --session ${shellQuote(current)} action list-tabs --json`
+    ) ?? []
   );
   const labels = generate(tabs.length);
   return tabs.map((tab, i) => ({
@@ -17422,13 +17448,17 @@ async function tabsSubmenu() {
     action: {
       kind: "callback",
       run: () => {
-        void hs.task.shell(`zellij --session ${shellQuote(current)} action go-to-tab-name ${shellQuote(tab.name)}`, {}).then(() => focusAlacritty());
+        void loginShell(
+          `zellij --session ${shellQuote(current)} action go-to-tab-name ${shellQuote(tab.name)}`
+        ).then(() => focusAlacritty());
       }
     }
   }));
 }
 async function reviveSubmenu() {
-  const exited = capped((await listSessions()).filter((s) => s.exited).map((s) => s.name));
+  const exited = capped(
+    (await listSessions()).filter((s) => s.exited).map((s) => s.name)
+  );
   const labels = generate(exited.length);
   return exited.map((name, i) => ({
     key: labels[i],
@@ -17439,7 +17469,9 @@ async function reviveSubmenu() {
       // yet) -- succeeds without disturbing whatever's currently attached
       // elsewhere.
       run: () => {
-        void hs.task.shell(`zellij attach --create-background ${shellQuote(name)}`, {}).then(() => switchToSession(name));
+        void loginShell(
+          `zellij attach --create-background ${shellQuote(name)}`
+        ).then(() => switchToSession(name));
       }
     }
   }));
@@ -17449,10 +17481,18 @@ var node = {
   label: "Zellij",
   action: {
     kind: "submenu",
-    submenu: [
-      { key: "s", label: "Switch session", action: { kind: "submenu", submenu: sessionsSubmenu } },
-      { key: "t", label: "Switch tab", action: { kind: "submenu", submenu: tabsSubmenu } },
-      { key: "r", label: "Revive session", action: { kind: "submenu", submenu: reviveSubmenu } }
+    submenu: async () => [
+      await switchSessionItem(),
+      {
+        key: "t",
+        label: "Switch tab",
+        action: { kind: "submenu", submenu: tabsSubmenu }
+      },
+      {
+        key: "r",
+        label: "Revive session",
+        action: { kind: "submenu", submenu: reviveSubmenu }
+      }
     ]
   }
 };
