@@ -25,6 +25,7 @@
 
 import { Theme, canvasColor } from "./nord-theme";
 import { flipFrameY } from "./leader-menu";
+import { Canvas, cornerRadii, type CanvasElement } from "./canvas";
 
 export interface ChoiceOption {
 	// Omit mods/key/run for a display-only legend entry (e.g. keyGlyph "⏎"
@@ -43,7 +44,8 @@ const BOTTOM_MARGIN_PX = 24;
 const CHIP_PADDING_X = 7;
 const CHIP_LABEL_GAP = 6;
 const PAIR_GAP = 20;
-const BAR_HEIGHT = Theme.paddingY * 2 + Theme.fontSize * Theme.textFrameHeightMultiplier;
+const BAR_HEIGHT =
+	Theme.paddingY * 2 + Theme.fontSize * Theme.textFrameHeightMultiplier;
 const CHIP_HEIGHT = Theme.fontSize + 10;
 
 // Fixed indices into every bar canvas's element list -- zero-size, never
@@ -87,7 +89,9 @@ function genericMods(flags: string[]): Set<string> {
 }
 
 function modsMatch(required: string[], present: Set<string>): boolean {
-	return required.length === present.size && required.every((m) => present.has(m));
+	return (
+		required.length === present.size && required.every((m) => present.has(m))
+	);
 }
 
 // Apple's standard virtual keycodes for these function-area keys -- fixed
@@ -107,7 +111,11 @@ const CONTROL_KEYCODES: Record<string, number> = {
 	escape: 53,
 };
 
-function keyMatches(optKey: string, event: HSEventTapEvent, keyName: string): boolean {
+function keyMatches(
+	optKey: string,
+	event: HSEventTapEvent,
+	keyName: string,
+): boolean {
 	const controlCode = CONTROL_KEYCODES[optKey];
 	if (controlCode !== undefined) return event.keyCode === controlCode;
 	if (optKey === keyName) return true;
@@ -115,19 +123,19 @@ function keyMatches(optKey: string, event: HSEventTapEvent, keyName: string): bo
 }
 
 function chipGlyph(opt: ChoiceOption): string {
-	if (opt.mods && opt.key) return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
+	if (opt.mods && opt.key)
+		return (
+			opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key)
+		);
 	return opt.keyGlyph ?? "";
 }
 
-// This API has no documented shape for roundedRectRadii (hs.canvas element
-// attributes are just loosely-typed dictionaries) -- empirically, a plain
-// number silently applies no rounding at all; only the {xRadius, yRadius}
-// object form actually rounds. Always use this, never a bare number.
-function cornerRadii(r: number): { xRadius: number; yRadius: number } {
-	return { xRadius: r, yRadius: r };
-}
-
-function barRect(width: number): { x: number; y: number; w: number; h: number } {
+function barRect(width: number): {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+} {
 	const sf = hs.screen.primary()!.frame;
 	return {
 		x: sf.x + (sf.w - width) / 2,
@@ -137,22 +145,28 @@ function barRect(width: number): { x: number; y: number; w: number; h: number } 
 	};
 }
 
-function rulerElements(): Record<string, unknown>[] {
+function rulerElements(): CanvasElement[] {
 	return [
-		{ type: "text", text: "", textWeight: "bold", textSize: Theme.fontSize, frame: { x: 0, y: 0, w: 1, h: 1 } },
-		{ type: "text", text: "", textSize: Theme.fontSize, frame: { x: 0, y: 0, w: 1, h: 1 } },
+		Canvas.text("", {
+			textWeight: "bold",
+			textSize: Theme.fontSize,
+			frame: { x: 0, y: 0, w: 1, h: 1 },
+		}),
+
+		Canvas.text("", {
+			textSize: Theme.fontSize,
+			frame: { x: 0, y: 0, w: 1, h: 1 },
+		}),
 	];
 }
 
-function backgroundElement(): Record<string, unknown> {
-	return {
-		type: "rectangle",
-		action: "strokeAndFill",
+function backgroundElement(): CanvasElement {
+	return Canvas.rectangle("strokeAndFill", {
 		fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
 		strokeColor: canvasColor(Theme.border),
 		strokeWidth: Theme.borderWidth,
 		roundedRectRadii: cornerRadii(Theme.cornerRadius),
-	};
+	});
 }
 
 function buildBarCanvas(): HSCanvas {
@@ -174,21 +188,29 @@ function render(bar: HSCanvas, options: ChoiceOption[]): void {
 	const segments = options.map((opt) => {
 		const glyph = chipGlyph(opt);
 		const chipTextSize = glyph
-			? (bar.minimumTextSize(BOLD_RULER_INDEX, glyph) as { w: number; h: number })
+			? (bar.minimumTextSize(BOLD_RULER_INDEX, glyph) as {
+					w: number;
+					h: number;
+				})
 			: { w: 0, h: 0 };
-		const labelSize = bar.minimumTextSize(REGULAR_RULER_INDEX, opt.label) as { w: number; h: number };
+		const labelSize = bar.minimumTextSize(REGULAR_RULER_INDEX, opt.label) as {
+			w: number;
+			h: number;
+		};
 		const chipW = glyph ? chipTextSize.w + CHIP_PADDING_X * 2 : 0;
 		const pairW = chipW + (chipW ? CHIP_LABEL_GAP : 0) + labelSize.w;
 		return { opt, glyph, chipW, labelW: labelSize.w, pairW };
 	});
 
-	const contentW = segments.reduce((sum, s) => sum + s.pairW, 0) + Math.max(0, segments.length - 1) * PAIR_GAP;
+	const contentW =
+		segments.reduce((sum, s) => sum + s.pairW, 0) +
+		Math.max(0, segments.length - 1) * PAIR_GAP;
 	const maxW = hs.screen.primary()!.frame.w * 0.9;
 	const barWidth = Math.min(contentW + Theme.paddingX * 2, maxW);
 
 	bar.setFrame(flipFrameY(barRect(barWidth)));
 
-	const elements: Record<string, unknown>[] = [...rulerElements(), backgroundElement()];
+	const elements: CanvasElement[] = [...rulerElements(), backgroundElement()];
 
 	const chipY = (BAR_HEIGHT - CHIP_HEIGHT) / 2;
 	const labelY = (BAR_HEIGHT - rowTextH) / 2;
@@ -196,31 +218,31 @@ function render(bar: HSCanvas, options: ChoiceOption[]): void {
 
 	segments.forEach((seg, i) => {
 		if (seg.chipW) {
-			elements.push({
-				type: "rectangle",
-				action: "fill",
-				fillColor: canvasColor(Theme.surface),
-				roundedRectRadii: cornerRadii(Theme.keyChipRadius),
-				frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT },
-			});
-			elements.push({
-				type: "text",
-				text: seg.glyph,
-				textColor: canvasColor(Theme.text),
-				textWeight: "bold",
-				textSize: Theme.fontSize,
-				textAlignment: "center",
-				frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT },
-			});
+			elements.push(
+				Canvas.rectangle("fill", {
+					fillColor: canvasColor(Theme.surface),
+					roundedRectRadii: cornerRadii(Theme.keyChipRadius),
+					frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT },
+				}),
+			);
+			elements.push(
+				Canvas.text(seg.glyph, {
+					textColor: canvasColor(Theme.text),
+					textWeight: "bold",
+					textSize: Theme.fontSize,
+					textAlignment: "center",
+					frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT },
+				}),
+			);
 			x += seg.chipW + CHIP_LABEL_GAP;
 		}
-		elements.push({
-			type: "text",
-			text: seg.opt.label,
-			textColor: canvasColor(Theme.textDim),
-			textSize: Theme.fontSize,
-			frame: { x, y: labelY, w: seg.labelW + 2, h: rowTextH },
-		});
+		elements.push(
+			Canvas.text(seg.opt.label, {
+				textColor: canvasColor(Theme.textDim),
+				textSize: Theme.fontSize,
+				frame: { x, y: labelY, w: seg.labelW + 2, h: rowTextH },
+			}),
+		);
 		x += seg.labelW;
 		if (i < segments.length - 1) x += PAIR_GAP;
 	});
@@ -241,7 +263,9 @@ function render(bar: HSCanvas, options: ChoiceOption[]): void {
 // header for why).
 export function attachOptionsBar(
 	chooser: HSChooser,
-	getOptionsForRow: (row: Record<string, unknown>) => ChoiceOption[] | undefined,
+	getOptionsForRow: (
+		row: Record<string, unknown>,
+	) => ChoiceOption[] | undefined,
 ): void {
 	let bar: HSCanvas | null = null;
 	let pollTimer: HSTimer | null = null;
@@ -265,7 +289,10 @@ export function attachOptionsBar(
 	// internally as the user types a query, so the same index can silently
 	// refer to a different row across ticks.
 	function tick(): void {
-		const row = chooser.selectedRowContents(null) as Record<string, unknown> | null;
+		const row = chooser.selectedRowContents(null) as Record<
+			string,
+			unknown
+		> | null;
 		if (row === lastRow) return;
 		lastRow = row;
 		currentOptions = row ? getOptionsForRow(row) : undefined;
@@ -279,7 +306,10 @@ export function attachOptionsBar(
 		const flags = genericMods(event.flags);
 		for (const opt of currentOptions) {
 			if (!opt.key || !opt.run) continue; // display-only legend entry
-			if (keyMatches(opt.key, event, keyName) && modsMatch(opt.mods ?? [], flags)) {
+			if (
+				keyMatches(opt.key, event, keyName) &&
+				modsMatch(opt.mods ?? [], flags)
+			) {
 				opt.run();
 				return hs.eventtap.consume;
 			}

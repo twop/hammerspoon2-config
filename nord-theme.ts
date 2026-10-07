@@ -65,7 +65,7 @@ export const Theme = {
 	border: Nord.nord2,
 
 	text: Nord.nord6,
-	textMuted: Nord.nord4,
+	textMuted: Nord.nord3,
 	textDim: Nord.nord3,
 
 	accent: Nord.nord8,
@@ -74,6 +74,7 @@ export const Theme = {
 	error: Nord.nord11,
 	warning: Nord.nord13,
 	success: Nord.nord14,
+	selectionBack: Nord.nord0,
 
 	paddingX: 16,
 	paddingY: 16,

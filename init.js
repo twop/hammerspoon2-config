@@ -89,13 +89,14 @@ var Theme = {
   surface: Nord.nord1,
   border: Nord.nord2,
   text: Nord.nord6,
-  textMuted: Nord.nord4,
+  textMuted: Nord.nord3,
   textDim: Nord.nord3,
   accent: Nord.nord8,
   accentSecondary: Nord.nord9,
   error: Nord.nord11,
   warning: Nord.nord13,
   success: Nord.nord14,
+  selectionBack: Nord.nord0,
   paddingX: 16,
   paddingY: 16,
   gap: 10,
@@ -116,6 +117,57 @@ var Theme = {
   placeholderDotDiameter: 16,
   placeholderRingStrokeWidth: 1
 };
+
+// canvas.ts
+function rectangle(action, props = {}) {
+  return { type: "rectangle", action, ...props };
+}
+function circle(action, props = {}) {
+  return { type: "circle", action, ...props };
+}
+function oval(action, props = {}) {
+  return { type: "oval", action, ...props };
+}
+function arc(action, props = {}) {
+  return { type: "arc", action, ...props };
+}
+function ellipticalArc(action, props = {}) {
+  return { type: "ellipticalArc", action, ...props };
+}
+function segments(action, props) {
+  return { type: "segments", action, ...props };
+}
+function points(action, props) {
+  return { type: "points", action, ...props };
+}
+function text(txt, props) {
+  return { type: "text", text: txt, ...props };
+}
+function image(props) {
+  return { type: "image", ...props };
+}
+function canvas(props) {
+  return { type: "canvas", ...props };
+}
+function resetClip(props = {}) {
+  return { type: "resetClip", ...props };
+}
+var Canvas = {
+  rectangle,
+  circle,
+  oval,
+  arc,
+  ellipticalArc,
+  segments,
+  points,
+  text,
+  image,
+  canvas,
+  resetClip
+};
+function cornerRadii(r) {
+  return r;
+}
 
 // leader-menu.ts
 var OVERLAY_LEVEL = hs.canvas.windowLevels["overlay"];
@@ -155,14 +207,14 @@ function nowMs() {
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
 }
-function animateCanvas(canvas2, opts) {
+function animateCanvas(canvas3, opts) {
   const durationMs = (opts.duration ?? 0.15) * 1e3;
   const startMs = nowMs();
   const { fromPoint, toPoint } = opts;
   const tick = () => {
     const t = Math.min((nowMs() - startMs) / durationMs, 1);
     const e = easeOutCubic(t);
-    canvas2.setTopLeft(
+    canvas3.setTopLeft(
       flipTopLeftY({
         x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
         y: fromPoint.y + (toPoint.y - fromPoint.y) * e
@@ -187,7 +239,7 @@ function animateCanvas(canvas2, opts) {
   timer.start();
   return timer;
 }
-var canvas = null;
+var canvas2 = null;
 var placeholderCanvas = null;
 var tap = null;
 var mouseTap = null;
@@ -224,8 +276,8 @@ function closeMenu(_source) {
   }
   for (const timer of animTimers) timer.stop();
   animTimers.clear();
-  canvas?.destroy();
-  canvas = null;
+  canvas2?.destroy();
+  canvas2 = null;
   placeholderCanvas?.destroy();
   placeholderCanvas = null;
   tap?.stop();
@@ -331,28 +383,22 @@ function buildPlaceholderCanvas(topLeft) {
     flipFrameY({ x: topLeft.x, y: topLeft.y, w: size, h: size })
   );
   c.appendElements([
-    {
-      type: "circle",
-      action: "fill",
+    Canvas.circle("fill", {
       fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
       center: { x: size / 2, y: size / 2 },
       radius: size / 2
-    },
-    {
-      type: "circle",
-      action: "stroke",
+    }),
+    Canvas.circle("stroke", {
       strokeColor: canvasColor(Theme.border),
       strokeWidth: Theme.placeholderRingStrokeWidth,
       center: { x: size / 2, y: size / 2 },
       radius: size / 2 - 0.5
-    },
-    {
-      type: "circle",
-      action: "fill",
+    }),
+    Canvas.circle("fill", {
       fillColor: canvasColor(Theme.border),
       center: { x: size / 2, y: size / 2 },
       radius: Theme.placeholderDotDiameter / 2
-    }
+    })
   ]);
   c.levelValue(OVERLAY_LEVEL);
   c.clickActivating(false);
@@ -399,7 +445,7 @@ function revealMenu() {
   renderMenu(top.options, top.breadcrumb, { entering: true });
 }
 function renderMenu(options, breadcrumb, opts = {}) {
-  canvas?.destroy();
+  canvas2?.destroy();
   const { paddingX, paddingY, fontSize, breadcrumbFontSize, gap } = Theme;
   const breadcrumbSpace = gap + breadcrumbFontSize;
   const w = 320;
@@ -409,21 +455,17 @@ function renderMenu(options, breadcrumb, opts = {}) {
   const { x, y } = restTopLeft;
   const c = hs.canvas.create(flipFrameY({ x, y, w, h }));
   c.appendElements([
-    {
-      type: "rectangle",
-      action: "strokeAndFill",
+    Canvas.rectangle("strokeAndFill", {
       fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
       strokeColor: canvasColor(Theme.border),
       strokeWidth: Theme.borderWidth,
-      roundedRectRadii: { xRadius: Theme.cornerRadius, yRadius: Theme.cornerRadius }
-    }
+      roundedRectRadii: cornerRadii(Theme.cornerRadius)
+    })
   ]);
   let yOffset = paddingY;
   if (breadcrumb.length > 0) {
     c.appendElements([
-      {
-        type: "text",
-        text: breadcrumb.join(" > "),
+      Canvas.text(breadcrumb.join(" > "), {
         textColor: canvasColor(Theme.textDim),
         textSize: breadcrumbFontSize,
         frame: {
@@ -432,7 +474,7 @@ function renderMenu(options, breadcrumb, opts = {}) {
           w: w - paddingX * 2,
           h: breadcrumbFontSize * Theme.textFrameHeightMultiplier
         }
-      }
+      })
     ]);
     yOffset += breadcrumbSpace;
   }
@@ -451,21 +493,18 @@ function renderMenu(options, breadcrumb, opts = {}) {
     if (icon) {
       if (typeof icon === "string") {
         c.appendElements([
-          {
-            type: "text",
-            text: icon,
+          Canvas.text(icon, {
             textSize: fontSize,
             textAlignment: "center",
             frame: { x: iconColX, y: rowY, w: iconColW, h: rowTextH },
             id,
             trackMouseDown: true
-          }
+          })
         ]);
       } else {
         const imageSize = Theme.imageIconSize;
         c.appendElements([
-          {
-            type: "image",
+          Canvas.image({
             image: icon,
             imageScaling: "scaleProportionally",
             frame: {
@@ -476,23 +515,19 @@ function renderMenu(options, breadcrumb, opts = {}) {
             },
             id,
             trackMouseDown: true
-          }
+          })
         ]);
       }
     }
     c.appendElements([
-      {
-        type: "rectangle",
-        action: "fill",
+      Canvas.rectangle("fill", {
         fillColor: canvasColor(Theme.surface),
-        roundedRectRadii: { xRadius: Theme.keyChipRadius, yRadius: Theme.keyChipRadius },
+        roundedRectRadii: cornerRadii(Theme.keyChipRadius),
         frame: { x: keyColX, y: rowY, w: keyColW, h: rowTextH },
         id,
         trackMouseDown: true
-      },
-      {
-        type: "text",
-        text: opt.key,
+      }),
+      Canvas.text(opt.key, {
         textColor: canvasColor(Theme.text),
         textWeight: "bold",
         textSize: fontSize,
@@ -500,13 +535,11 @@ function renderMenu(options, breadcrumb, opts = {}) {
         frame: { x: keyColX, y: rowY, w: keyColW, h: rowTextH },
         id,
         trackMouseDown: true
-      }
+      })
     ]);
     const arrowW = opt.action.kind === "submenu" ? 24 : 0;
     c.appendElements([
-      {
-        type: "text",
-        text: opt.label,
+      Canvas.text(opt.label, {
         textColor: canvasColor(Theme.text),
         textSize: fontSize,
         frame: {
@@ -517,19 +550,17 @@ function renderMenu(options, breadcrumb, opts = {}) {
         },
         id,
         trackMouseDown: true
-      }
+      })
     ]);
     if (opt.action.kind === "submenu") {
       c.appendElements([
-        {
-          type: "text",
-          text: "\u2192",
+        Canvas.text("\u2192", {
           textColor: canvasColor(Theme.textDim),
           textSize: fontSize,
           frame: { x: w - paddingX - arrowW, y: rowY, w: arrowW, h: rowTextH },
           id,
           trackMouseDown: true
-        }
+        })
       ]);
     }
   });
@@ -553,7 +584,7 @@ function renderMenu(options, breadcrumb, opts = {}) {
   } else {
     c.show();
   }
-  canvas = c;
+  canvas2 = c;
 }
 function bindKeys(options, breadcrumb) {
   tap?.stop();
@@ -599,9 +630,9 @@ function bindKeys(options, breadcrumb) {
   tap.start();
 }
 function withinCanvas(point) {
-  if (!canvas) return false;
+  if (!canvas2) return false;
   const f = flipFrameY(
-    canvas.frame()
+    canvas2.frame()
   );
   return point.x >= f.x && point.x <= f.x + f.w && point.y >= f.y && point.y <= f.y + f.h;
 }
@@ -16328,11 +16359,9 @@ function keyMatches(optKey, event, keyName) {
   return event.characters === optKey;
 }
 function chipGlyph(opt) {
-  if (opt.mods && opt.key) return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
+  if (opt.mods && opt.key)
+    return opt.mods.map((m) => MOD_SYMBOLS[m] ?? m).join("") + keyDisplay(opt.key);
   return opt.keyGlyph ?? "";
-}
-function cornerRadii(r) {
-  return { xRadius: r, yRadius: r };
 }
 function barRect(width) {
   const sf = hs.screen.primary().frame;
@@ -16345,19 +16374,24 @@ function barRect(width) {
 }
 function rulerElements() {
   return [
-    { type: "text", text: "", textWeight: "bold", textSize: Theme.fontSize, frame: { x: 0, y: 0, w: 1, h: 1 } },
-    { type: "text", text: "", textSize: Theme.fontSize, frame: { x: 0, y: 0, w: 1, h: 1 } }
+    Canvas.text("", {
+      textWeight: "bold",
+      textSize: Theme.fontSize,
+      frame: { x: 0, y: 0, w: 1, h: 1 }
+    }),
+    Canvas.text("", {
+      textSize: Theme.fontSize,
+      frame: { x: 0, y: 0, w: 1, h: 1 }
+    })
   ];
 }
 function backgroundElement() {
-  return {
-    type: "rectangle",
-    action: "strokeAndFill",
+  return Canvas.rectangle("strokeAndFill", {
     fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
     strokeColor: canvasColor(Theme.border),
     strokeWidth: Theme.borderWidth,
     roundedRectRadii: cornerRadii(Theme.cornerRadius)
-  };
+  });
 }
 function buildBarCanvas() {
   const c = hs.canvas.create(flipFrameY(barRect(200)));
@@ -16368,7 +16402,7 @@ function buildBarCanvas() {
 }
 function render(bar, options) {
   const rowTextH = Theme.fontSize * Theme.textFrameHeightMultiplier;
-  const segments = options.map((opt) => {
+  const segments2 = options.map((opt) => {
     const glyph = chipGlyph(opt);
     const chipTextSize = glyph ? bar.minimumTextSize(BOLD_RULER_INDEX, glyph) : { w: 0, h: 0 };
     const labelSize = bar.minimumTextSize(REGULAR_RULER_INDEX, opt.label);
@@ -16376,7 +16410,7 @@ function render(bar, options) {
     const pairW = chipW + (chipW ? CHIP_LABEL_GAP : 0) + labelSize.w;
     return { opt, glyph, chipW, labelW: labelSize.w, pairW };
   });
-  const contentW = segments.reduce((sum, s) => sum + s.pairW, 0) + Math.max(0, segments.length - 1) * PAIR_GAP;
+  const contentW = segments2.reduce((sum, s) => sum + s.pairW, 0) + Math.max(0, segments2.length - 1) * PAIR_GAP;
   const maxW = hs.screen.primary().frame.w * 0.9;
   const barWidth = Math.min(contentW + Theme.paddingX * 2, maxW);
   bar.setFrame(flipFrameY(barRect(barWidth)));
@@ -16384,35 +16418,35 @@ function render(bar, options) {
   const chipY = (BAR_HEIGHT - CHIP_HEIGHT) / 2;
   const labelY = (BAR_HEIGHT - rowTextH) / 2;
   let x = Theme.paddingX;
-  segments.forEach((seg, i) => {
+  segments2.forEach((seg, i) => {
     if (seg.chipW) {
-      elements.push({
-        type: "rectangle",
-        action: "fill",
-        fillColor: canvasColor(Theme.surface),
-        roundedRectRadii: cornerRadii(Theme.keyChipRadius),
-        frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
-      });
-      elements.push({
-        type: "text",
-        text: seg.glyph,
-        textColor: canvasColor(Theme.text),
-        textWeight: "bold",
-        textSize: Theme.fontSize,
-        textAlignment: "center",
-        frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
-      });
+      elements.push(
+        Canvas.rectangle("fill", {
+          fillColor: canvasColor(Theme.surface),
+          roundedRectRadii: cornerRadii(Theme.keyChipRadius),
+          frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
+        })
+      );
+      elements.push(
+        Canvas.text(seg.glyph, {
+          textColor: canvasColor(Theme.text),
+          textWeight: "bold",
+          textSize: Theme.fontSize,
+          textAlignment: "center",
+          frame: { x, y: chipY, w: seg.chipW, h: CHIP_HEIGHT }
+        })
+      );
       x += seg.chipW + CHIP_LABEL_GAP;
     }
-    elements.push({
-      type: "text",
-      text: seg.opt.label,
-      textColor: canvasColor(Theme.textDim),
-      textSize: Theme.fontSize,
-      frame: { x, y: labelY, w: seg.labelW + 2, h: rowTextH }
-    });
+    elements.push(
+      Canvas.text(seg.opt.label, {
+        textColor: canvasColor(Theme.textDim),
+        textSize: Theme.fontSize,
+        frame: { x, y: labelY, w: seg.labelW + 2, h: rowTextH }
+      })
+    );
     x += seg.labelW;
-    if (i < segments.length - 1) x += PAIR_GAP;
+    if (i < segments2.length - 1) x += PAIR_GAP;
   });
   bar.replaceElements(elements);
   bar.show();
@@ -16500,18 +16534,16 @@ function emojiImage(char) {
     h: EMOJI_IMAGE_SIZE
   });
   c.appendElements([
-    {
-      type: "text",
-      text: char,
+    Canvas.text(char, {
       textSize: EMOJI_IMAGE_SIZE * 0.75,
       textAlignment: "center",
       frame: { x: 0, y: 0, w: EMOJI_IMAGE_SIZE, h: EMOJI_IMAGE_SIZE }
-    }
+    })
   ]);
-  const image = c.imageFromCanvas();
+  const image2 = c.imageFromCanvas();
   c.destroy();
-  imageCache.set(char, image);
-  return image;
+  imageCache.set(char, image2);
+  return image2;
 }
 var chooser = null;
 var allChoices = [];
@@ -16622,7 +16654,7 @@ function show3() {
   const menuItems = app.getMenuItems();
   if (!menuItems) return;
   const choices = [];
-  flatten(menuItems, [], choices);
+  flatten(menuItems.slice(1), [], choices);
   if (choices.length === 0) return;
   const c = chooser2;
   c.setChoices(choices);
@@ -16645,7 +16677,8 @@ function styleChooser(c) {
   c.borderColor = chooserColor(Theme.border);
   c.cornerRadius = Theme.cornerRadius;
   c.textColor = chooserColor(Theme.text);
-  c.subTextColor = chooserColor(Theme.textDim);
+  c.subTextColor = chooserColor(Theme.textMuted);
+  c.selectionColor = chooserColor(Theme.selectionBack);
 }
 function bundleIDForPath(path) {
   const info = hs.plist.fromFile(`${path}/Contents/Info.plist`);
@@ -16842,9 +16875,9 @@ function looksLikeURL(s) {
 function looksLikeFilePath(s) {
   return s.startsWith("/") && !s.includes("\n") && hs.fs.attributes(s) !== null;
 }
-function classifyText(text) {
-  if (looksLikeURL(text)) return "url";
-  if (looksLikeFilePath(text)) return "file";
+function classifyText(text2) {
+  if (looksLikeURL(text2)) return "url";
+  if (looksLikeFilePath(text2)) return "file";
   return "text";
 }
 function frontmostSource() {
@@ -16852,9 +16885,9 @@ function frontmostSource() {
   return app ? { name: app.title, bundleID: app.bundleID } : null;
 }
 function captureText(source) {
-  const text = hs.pasteboard.readString();
-  if (!text || text.length > MAX_TEXT_LENGTH) return null;
-  return { kind: classifyText(text), text, bytes: text.length, time: Date.now(), source };
+  const text2 = hs.pasteboard.readString();
+  if (!text2 || text2.length > MAX_TEXT_LENGTH) return null;
+  return { kind: classifyText(text2), text: text2, bytes: text2.length, time: Date.now(), source };
 }
 function captureImage(source) {
   const img = hs.pasteboard.readImage();
@@ -17271,8 +17304,8 @@ function dailyNotePath() {
 }
 
 // quick-note.ts
-function appendToDailyNote(text) {
-  const trimmed = text.trim();
+function appendToDailyNote(text2) {
+  const trimmed = text2.trim();
   if (!trimmed) return;
   const { path, dir } = dailyNotePath();
   hs.fs.mkdir(dir);
@@ -17305,9 +17338,9 @@ function ensureChooser() {
       key: "return",
       label: "Append to daily note",
       run: () => {
-        const text = chooser6.query;
+        const text2 = chooser6.query;
         chooser6.hide();
-        appendToDailyNote(text);
+        appendToDailyNote(text2);
       }
     }
   ]);

@@ -80,7 +80,11 @@ export function show(): void {
   if (!menuItems) return;
 
   const choices: MenuChoice[] = [];
-  flatten(menuItems, [], choices);
+  // Top-level menu 0 is always the bolded app-name menu (About/Preferences/
+  // Services/Hide/Quit) -- boilerplate that's identical in shape across every
+  // app and never what you're searching for, so it's dropped rather than
+  // flattened alongside the app's real menus (File, Edit, ...).
+  flatten(menuItems.slice(1), [], choices);
   if (choices.length === 0) return;
 
   const c = chooser!;

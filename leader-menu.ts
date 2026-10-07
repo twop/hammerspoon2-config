@@ -22,6 +22,7 @@
 //   chaining v1 had is dropped (it was defensive cleanup only).
 
 import { Theme, canvasColor } from "./nord-theme";
+import { Canvas, cornerRadii } from "./canvas";
 
 // `noUncheckedIndexedAccess` turns every Record<string, T> lookup -- dot
 // notation included -- into `T | undefined`, so these named constants (all
@@ -112,7 +113,12 @@ function flipTopLeftY(point: { x: number; y: number }): {
 // coordinates), so it's also used to read canvas.frame() back. Exported
 // for chooser-options-bar.ts too, which positions its own small canvas the
 // same way.
-export function flipFrameY(rect: { x: number; y: number; w: number; h: number }): {
+export function flipFrameY(rect: {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}): {
 	x: number;
 	y: number;
 	w: number;
@@ -404,28 +410,22 @@ function buildPlaceholderCanvas(topLeft: { x: number; y: number }): HSCanvas {
 		flipFrameY({ x: topLeft.x, y: topLeft.y, w: size, h: size }),
 	);
 	c.appendElements([
-		{
-			type: "circle",
-			action: "fill",
+		Canvas.circle("fill", {
 			fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
 			center: { x: size / 2, y: size / 2 },
 			radius: size / 2,
-		},
-		{
-			type: "circle",
-			action: "stroke",
+		}),
+		Canvas.circle("stroke", {
 			strokeColor: canvasColor(Theme.border),
 			strokeWidth: Theme.placeholderRingStrokeWidth,
 			center: { x: size / 2, y: size / 2 },
 			radius: size / 2 - 0.5,
-		},
-		{
-			type: "circle",
-			action: "fill",
+		}),
+		Canvas.circle("fill", {
 			fillColor: canvasColor(Theme.border),
 			center: { x: size / 2, y: size / 2 },
 			radius: Theme.placeholderDotDiameter / 2,
-		},
+		}),
 	]);
 	c.levelValue(OVERLAY_LEVEL);
 	c.clickActivating(false);
@@ -503,22 +503,18 @@ function renderMenu(
 
 	const c = hs.canvas.create(flipFrameY({ x, y, w, h }));
 	c.appendElements([
-		{
-			type: "rectangle",
-			action: "strokeAndFill",
+		Canvas.rectangle("strokeAndFill", {
 			fillColor: canvasColor(Theme.background, Theme.backgroundAlpha),
 			strokeColor: canvasColor(Theme.border),
 			strokeWidth: Theme.borderWidth,
-			roundedRectRadii: { xRadius: Theme.cornerRadius, yRadius: Theme.cornerRadius },
-		},
+			roundedRectRadii: cornerRadii(Theme.cornerRadius),
+		}),
 	]);
 
 	let yOffset = paddingY;
 	if (breadcrumb.length > 0) {
 		c.appendElements([
-			{
-				type: "text",
-				text: breadcrumb.join(" > "),
+			Canvas.text(breadcrumb.join(" > "), {
 				textColor: canvasColor(Theme.textDim),
 				textSize: breadcrumbFontSize,
 				frame: {
@@ -527,7 +523,7 @@ function renderMenu(
 					w: w - paddingX * 2,
 					h: breadcrumbFontSize * Theme.textFrameHeightMultiplier,
 				},
-			},
+			}),
 		]);
 		yOffset += breadcrumbSpace;
 	}
@@ -549,21 +545,18 @@ function renderMenu(
 		if (icon) {
 			if (typeof icon === "string") {
 				c.appendElements([
-					{
-						type: "text",
-						text: icon,
+					Canvas.text(icon, {
 						textSize: fontSize,
 						textAlignment: "center",
 						frame: { x: iconColX, y: rowY, w: iconColW, h: rowTextH },
 						id,
 						trackMouseDown: true,
-					},
+					}),
 				]);
 			} else {
 				const imageSize = Theme.imageIconSize;
 				c.appendElements([
-					{
-						type: "image",
+					Canvas.image({
 						image: icon,
 						imageScaling: "scaleProportionally",
 						frame: {
@@ -574,7 +567,7 @@ function renderMenu(
 						},
 						id,
 						trackMouseDown: true,
-					},
+					}),
 				]);
 			}
 		}
@@ -584,18 +577,14 @@ function renderMenu(
 		// every other row element -- otherwise this area of the row becomes a
 		// dead click zone against the shared mouseCallback below.
 		c.appendElements([
-			{
-				type: "rectangle",
-				action: "fill",
+			Canvas.rectangle("fill", {
 				fillColor: canvasColor(Theme.surface),
-				roundedRectRadii: { xRadius: Theme.keyChipRadius, yRadius: Theme.keyChipRadius },
+				roundedRectRadii: cornerRadii(Theme.keyChipRadius),
 				frame: { x: keyColX, y: rowY, w: keyColW, h: rowTextH },
 				id,
 				trackMouseDown: true,
-			},
-			{
-				type: "text",
-				text: opt.key,
+			}),
+			Canvas.text(opt.key, {
 				textColor: canvasColor(Theme.text),
 				textWeight: "bold",
 				textSize: fontSize,
@@ -603,16 +592,14 @@ function renderMenu(
 				frame: { x: keyColX, y: rowY, w: keyColW, h: rowTextH },
 				id,
 				trackMouseDown: true,
-			},
+			}),
 		]);
 
 		// Label + submenu arrow: two adjacent text elements (no hs.styledtext
 		// in v2 to mix styles within one string -- see file header).
 		const arrowW = opt.action.kind === "submenu" ? 24 : 0;
 		c.appendElements([
-			{
-				type: "text",
-				text: opt.label,
+			Canvas.text(opt.label, {
 				textColor: canvasColor(Theme.text),
 				textSize: fontSize,
 				frame: {
@@ -623,19 +610,17 @@ function renderMenu(
 				},
 				id,
 				trackMouseDown: true,
-			},
+			}),
 		]);
 		if (opt.action.kind === "submenu") {
 			c.appendElements([
-				{
-					type: "text",
-					text: "→",
+				Canvas.text("→", {
 					textColor: canvasColor(Theme.textDim),
 					textSize: fontSize,
 					frame: { x: w - paddingX - arrowW, y: rowY, w: arrowW, h: rowTextH },
 					id,
 					trackMouseDown: true,
-				},
+				}),
 			]);
 		}
 	});

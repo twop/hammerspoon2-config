@@ -35,7 +35,8 @@ export function styleChooser(c: HSChooser): void {
 	c.borderColor = chooserColor(Theme.border);
 	c.cornerRadius = Theme.cornerRadius;
 	c.textColor = chooserColor(Theme.text);
-	c.subTextColor = chooserColor(Theme.textDim);
+	c.subTextColor = chooserColor(Theme.textMuted);
+	c.selectionColor = chooserColor(Theme.selectionBack);
 }
 
 function bundleIDForPath(path: string): string | null {

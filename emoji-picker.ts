@@ -17,6 +17,7 @@
 import { Theme, chooserColor } from "./nord-theme";
 import emojiData from "unicode-emoji-json/data-by-emoji.json";
 import { attachOptionsBar, type ChoiceOption } from "./chooser-options-bar";
+import { Canvas } from "./canvas";
 
 const FREQUENCY_KEY = "emojiPicker.frequency";
 const FREQUENT_PIN_COUNT = 12; // how many top-frequency emoji get pinned to the top
@@ -71,13 +72,11 @@ function emojiImage(char: string): HSImage | null {
 		h: EMOJI_IMAGE_SIZE,
 	});
 	c.appendElements([
-		{
-			type: "text",
-			text: char,
+		Canvas.text(char, {
 			textSize: EMOJI_IMAGE_SIZE * 0.75,
 			textAlignment: "center",
 			frame: { x: 0, y: 0, w: EMOJI_IMAGE_SIZE, h: EMOJI_IMAGE_SIZE },
-		},
+		}),
 	]);
 	const image = c.imageFromCanvas();
 	c.destroy();
