@@ -81,10 +81,12 @@ function setWindowFrame(
 	win.frame = new HSRect(x, screenFrame.y, width, screenFrame.h);
 }
 
+// Not hs.window.maximize(): its bundled JS (hs.window.js) calls
+// win.setFrame(x, y, w, h), which HSWindow doesn't have -- it throws, so
+// the window never moves. Go through the same frame setter as the rest.
 function maximizeFocusedWindow(): void {
 	hs.window.focusedWindow()?.raise();
-	const win = hs.window.focusedWindow();
-	if (win) hs.window.maximize(win);
+	setWindowFrame(1, "left");
 }
 
 function toggleFullScreenFocusedWindow(): void {
@@ -112,11 +114,20 @@ function hideOtherApps(): void {
 // DAILY JOURNAL NOTE
 // ============================================================
 
-function openDailyNote(): void {
+// Today's note path, creating the file (and its folder) if missing.
+function ensureDailyNote(): string {
 	const { path, dir } = dailyNotePath();
 	hs.fs.mkdir(dir);
 	if (!hs.fs.attributes(path)) hs.fs.write(path, "");
-	Term.summon("journal", "hx " + Term.shellQuote(path));
+	return path;
+}
+
+function openDailyNote(): void {
+	Term.summon("journal", "hx " + Term.shellQuote(ensureDailyNote()));
+}
+
+function openDailyNoteInShelv(): void {
+	hs.task.create("/usr/bin/open", ["-a", "Shelv", ensureDailyNote()], null, null, null).start();
 }
 
 // ============================================================
@@ -483,6 +494,12 @@ export const menuTree: MenuItem[] = [
 					label: "Daily note",
 					icon: symbol("note.text"),
 					action: { kind: "callback", run: openDailyNote },
+				},
+				{
+					key: "D",
+					label: "Daily note (Shelv)",
+					icon: symbol("note.text"),
+					action: { kind: "callback", run: openDailyNoteInShelv },
 				},
 				{
 					key: "q",

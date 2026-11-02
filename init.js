@@ -16711,8 +16711,8 @@ function spec() {
 }
 
 // menu-item-search.ts
-function flatten(items, ancestorTitles, out) {
-  for (const item of items ?? []) {
+function flatten(items2, ancestorTitles, out) {
+  for (const item of items2 ?? []) {
     const title = item.title;
     if (!title) continue;
     if (item.items && item.items.length > 0) {
@@ -17395,103 +17395,110 @@ var SHELL2 = hs.appinfo.environment.SHELL ?? "/bin/zsh";
 function loginShell(cmd) {
   return hs.task.shell(`${SHELL2} -l -i -c ${shellQuote(cmd)}`, {});
 }
-async function runLines(cmd) {
-  const { stdout } = await loginShell(cmd);
-  return stdout.split(/\r?\n/).filter((line) => line.length > 0);
-}
-async function runJson(cmd) {
-  const { stdout } = await loginShell(cmd);
+async function pipe(session, name, payload = {}) {
+  const { exitCode, stdout } = await loginShell(
+    `zellij --session ${shellQuote(session)} pipe --plugin zj_hs_jump --name ${name} -- ${shellQuote(JSON.stringify(payload))} </dev/null`
+  );
+  const start = stdout.indexOf("{");
+  if (exitCode !== 0 || start < 0) return null;
   try {
-    return JSON.parse(stdout);
+    return JSON.parse(stdout.slice(start));
   } catch {
     return null;
   }
 }
-async function listSessions() {
-  const lines = await runLines(`zellij list-sessions --no-formatting`);
-  const sessions = [];
-  for (const line of lines) {
-    const name = line.match(/^(\S+)/)?.[1];
-    if (name) sessions.push({ name, exited: line.includes("EXITED") });
-  }
-  return sessions;
-}
+var serverSession = null;
 async function liveSessionNames() {
-  return (await listSessions()).filter((s) => !s.exited).map((s) => s.name);
+  const { stdout } = await loginShell("zellij list-sessions --no-formatting");
+  return stdout.split(/\r?\n/).filter((line) => line.length > 0 && !line.includes("EXITED")).map((line) => line.match(/^(\S+)/)?.[1]).filter((name) => !!name);
 }
-var currentSession = null;
-var lastSession = null;
-async function detectAttachedSession() {
-  for (const name of await liveSessionNames()) {
-    const { exitCode, stdout } = await loginShell(
-      `zellij --session ${shellQuote(name)} action list-clients`
-    );
-    if (exitCode !== 0) continue;
-    for (const line of stdout.split(/\r?\n/)) {
-      if (/^\d/.test(line)) return name;
-    }
+async function stateFrom(session) {
+  const state = await pipe(session, "state");
+  if (!state?.ready) return null;
+  serverSession = session;
+  return state;
+}
+async function fetchState() {
+  const cached = serverSession;
+  if (cached) {
+    const state = await stateFrom(cached);
+    if (state) return state;
+  }
+  serverSession = null;
+  for (const session of await liveSessionNames()) {
+    if (session === cached) continue;
+    const state = await stateFrom(session);
+    if (state) return state;
   }
   return null;
 }
-async function resolveCurrentSession() {
-  if (!currentSession) currentSession = await detectAttachedSession();
-  if (!currentSession)
+async function resolveState() {
+  const state = await fetchState();
+  if (!state) {
+    hs.ui.alert("Zellij: zj_hs_jump not reachable").show();
+    return null;
+  }
+  const current = state.attached[0];
+  if (!current) {
     hs.ui.alert("Zellij: no session currently attached").show();
-  return currentSession;
+    return null;
+  }
+  return { state, current };
 }
 var ALACRITTY_BUNDLE_ID = "io.alacritty";
 function focusAlacritty() {
   void hs.application.launchOrFocus(ALACRITTY_BUNDLE_ID);
 }
-async function switchToSession(name) {
-  const current = await resolveCurrentSession();
-  if (current) {
-    await loginShell(
-      `zellij --session ${shellQuote(current)} action switch-session ${shellQuote(name)}`
-    );
-    lastSession = current;
-  }
-  currentSession = name;
+function reportFailure(reply) {
+  if (reply?.ok) return false;
+  hs.ui.alert(`Zellij: ${reply?.error ?? "no reply from zj_hs_jump"}`).show();
+  return true;
+}
+async function sendToAttached(name, payload) {
+  const resolved = await resolveState();
+  if (!resolved) return;
+  if (reportFailure(await pipe(resolved.current, name, payload)))
+    return;
   focusAlacritty();
+}
+function switchToSession(name) {
+  return sendToAttached("session", { name });
+}
+function focusTab(session, tab) {
+  return sendToAttached("focus", { session, tab });
+}
+async function reviveSession(name) {
+  await loginShell(`zellij attach --create-background ${shellQuote(name)}`);
+  await switchToSession(name);
 }
 function capped(list) {
   return list.slice(0, capacity());
 }
-async function sessionsSubmenu() {
-  const current = await resolveCurrentSession();
-  const names = capped(
-    (await liveSessionNames()).filter((name) => name !== current)
-  );
-  const labels = generate(names.length);
-  return names.map((name, i) => ({
-    key: labels[i],
-    label: name,
-    action: { kind: "callback", run: () => void switchToSession(name) }
-  }));
+function otherSessions(state) {
+  const current = state.attached[0];
+  return state.sessions.map((s) => s.name).filter((name) => name !== current);
 }
 async function switchSessionItem() {
-  const liveNames = await liveSessionNames();
-  const direct = lastSession && lastSession !== currentSession && liveNames.includes(lastSession) ? lastSession : null;
-  if (direct) {
-    return {
-      key: "z",
-      label: `Switch session \u2192 ${direct}`,
-      action: { kind: "callback", run: () => void switchToSession(direct) }
-    };
-  }
+  const state = await fetchState();
+  const target = state ? otherSessions(state)[0] : void 0;
   return {
-    key: "z",
-    label: "Switch session",
-    action: { kind: "submenu", submenu: sessionsSubmenu }
+    key: "s",
+    label: target ? `Switch session \u2192 ${target}` : "Switch session",
+    action: {
+      kind: "callback",
+      run: () => {
+        if (target) void switchToSession(target);
+      }
+    }
   };
 }
 async function tabsSubmenu() {
-  const current = await resolveCurrentSession();
-  if (!current) return [];
+  const resolved = await resolveState();
+  if (!resolved) return [];
+  const { state, current } = resolved;
+  const session = state.sessions.find((s) => s.name === current);
   const tabs = capped(
-    await runJson(
-      `zellij --session ${shellQuote(current)} action list-tabs --json`
-    ) ?? []
+    [...session?.tabs ?? []].sort((a, b) => a.position - b.position)
   );
   const labels = generate(tabs.length);
   return tabs.map((tab, i) => ({
@@ -17499,54 +17506,97 @@ async function tabsSubmenu() {
     label: tab.name,
     action: {
       kind: "callback",
-      run: () => {
-        void loginShell(
-          `zellij --session ${shellQuote(current)} action go-to-tab-name ${shellQuote(tab.name)}`
-        ).then(() => focusAlacritty());
-      }
+      run: () => void focusTab(current, tab.position)
     }
   }));
 }
 async function reviveSubmenu() {
-  const exited = capped(
-    (await listSessions()).filter((s) => s.exited).map((s) => s.name)
-  );
+  const state = await fetchState();
+  if (!state) {
+    hs.ui.alert("Zellij: zj_hs_jump not reachable").show();
+    return [];
+  }
+  const exited = capped(state.resurrectable);
   const labels = generate(exited.length);
   return exited.map((name, i) => ({
     key: labels[i],
     label: name,
-    action: {
-      kind: "callback",
-      // Resurrects it as a live background session (no client attached
-      // yet) -- succeeds without disturbing whatever's currently attached
-      // elsewhere.
-      run: () => {
-        void loginShell(
-          `zellij attach --create-background ${shellQuote(name)}`
-        ).then(() => switchToSession(name));
-      }
-    }
+    action: { kind: "callback", run: () => void reviveSession(name) }
   }));
 }
-var node = {
-  key: "z",
-  label: "Zellij",
-  action: {
-    kind: "submenu",
-    submenu: async () => [
-      await switchSessionItem(),
-      {
-        key: "t",
-        label: "Switch tab",
-        action: { kind: "submenu", submenu: tabsSubmenu }
-      },
-      {
-        key: "r",
-        label: "Revive session",
-        action: { kind: "submenu", submenu: reviveSubmenu }
-      }
-    ]
+async function jumpSpec() {
+  const state = await fetchState();
+  const current = state?.attached[0];
+  const choices = [];
+  for (const session of state?.sessions ?? []) {
+    const isCurrent = session.name === current;
+    if (!isCurrent)
+      choices.push({
+        text: session.name,
+        subText: `session \xB7 ${session.tabs.length} tabs`,
+        session: session.name,
+        tab: null,
+        exited: false
+      });
+    for (const tab of [...session.tabs].sort((a, b) => a.position - b.position)) {
+      if (isCurrent && tab.active) continue;
+      choices.push({
+        text: `${session.name} \u203A ${tab.name}`,
+        subText: isCurrent ? "tab \xB7 current session" : "tab",
+        session: session.name,
+        tab: tab.position,
+        exited: false
+      });
+    }
   }
+  for (const name of state?.resurrectable ?? [])
+    choices.push({
+      text: name,
+      subText: "exited session \xB7 revive",
+      session: name,
+      tab: null,
+      exited: true
+    });
+  return {
+    choices,
+    placeholder: state ? "Jump to session or tab\u2026" : "zj_hs_jump not reachable",
+    searchSubText: true,
+    onSelect: (choice) => {
+      hs.timer.doAfter(0, () => {
+        if (choice.exited) void reviveSession(choice.session);
+        else if (choice.tab === null) void switchToSession(choice.session);
+        else void focusTab(choice.session, choice.tab);
+      });
+    }
+  };
+}
+async function items() {
+  return [
+    await switchSessionItem(),
+    {
+      key: "f",
+      label: "Find session/tab",
+      action: {
+        kind: "chooser",
+        spec: async () => eraseChooser(await jumpSpec())
+      }
+    },
+    {
+      key: "t",
+      label: "Switch tab",
+      action: { kind: "submenu", submenu: tabsSubmenu }
+    },
+    {
+      key: "r",
+      label: "Revive session",
+      action: { kind: "submenu", submenu: reviveSubmenu }
+    }
+  ];
+}
+var node = {
+  key: "j",
+  label: "Zellij",
+  action: { kind: "submenu", submenu: items }
 };
 
 // leader-menu-config.ts
@@ -17584,8 +17634,7 @@ function setWindowFrame(widthFraction, position) {
 }
 function maximizeFocusedWindow() {
   hs.window.focusedWindow()?.raise();
-  const win = hs.window.focusedWindow();
-  if (win) hs.window.maximize(win);
+  setWindowFrame(1, "left");
 }
 function toggleFullScreenFocusedWindow() {
   hs.window.focusedWindow()?.toggleFullscreen();
@@ -17599,11 +17648,17 @@ function hideOtherApps() {
     app.hide();
   }
 }
-function openDailyNote() {
+function ensureDailyNote() {
   const { path, dir } = dailyNotePath();
   hs.fs.mkdir(dir);
   if (!hs.fs.attributes(path)) hs.fs.write(path, "");
-  summon("journal", "hx " + shellQuote(path));
+  return path;
+}
+function openDailyNote() {
+  summon("journal", "hx " + shellQuote(ensureDailyNote()));
+}
+function openDailyNoteInShelv() {
+  hs.task.create("/usr/bin/open", ["-a", "Shelv", ensureDailyNote()], null, null, null).start();
 }
 var menuTree = [
   {
@@ -17949,6 +18004,12 @@ var menuTree = [
           action: { kind: "callback", run: openDailyNote }
         },
         {
+          key: "D",
+          label: "Daily note (Shelv)",
+          icon: symbol("note.text"),
+          action: { kind: "callback", run: openDailyNoteInShelv }
+        },
+        {
           key: "q",
           label: "Quick note",
           icon: symbol("square.and.pencil"),
@@ -17987,5 +18048,14 @@ var hotkeys = [
     null
   ),
   // LEADER MENU (Hyper+M) -- LeaderKey-style popup.
-  hs.hotkey.bind(hyper, "space", () => show(menuTree), null)
+  hs.hotkey.bind(hyper, "space", () => show(menuTree), null),
+  // ZELLIJ MENU (Hyper+G) -- the leader menu's "j" submenu, opened directly.
+  // Its items need a zj_hs_jump state fetch first, so the menu shows once
+  // that resolves.
+  hs.hotkey.bind(
+    hyper,
+    "g",
+    () => void items().then((items2) => show(items2)),
+    null
+  )
 ];

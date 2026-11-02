@@ -5,6 +5,7 @@
 import * as Term from "./termview";
 import * as LeaderMenu from "./leader-menu";
 import { menuTree } from "./leader-menu-config";
+import * as ZellijMenu from "./zellij-menu";
 
 // Hyper is provided at the hardware level by the keyboard, sending
 // Cmd+Ctrl+Option+Shift.
@@ -28,4 +29,13 @@ const hotkeys = [
 	),
 	// LEADER MENU (Hyper+M) -- LeaderKey-style popup.
 	hs.hotkey.bind(hyper, "space", () => LeaderMenu.show(menuTree), null),
+	// ZELLIJ MENU (Hyper+G) -- the leader menu's "j" submenu, opened directly.
+	// Its items need a zj_hs_jump state fetch first, so the menu shows once
+	// that resolves.
+	hs.hotkey.bind(
+		hyper,
+		"g",
+		() => void ZellijMenu.items().then((items) => LeaderMenu.show(items)),
+		null,
+	),
 ];
