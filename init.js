@@ -624,6 +624,10 @@ function resolveIcon(opt) {
   }
   return null;
 }
+async function focusApp(bundleID) {
+  await hs.application.launchOrFocus(bundleID);
+  hs.application.matchingBundleID(bundleID)?.activate();
+}
 function runShellCommand(path, args) {
   const task = hs.task.create(path, args, null, null, null);
   task.start();
@@ -659,10 +663,7 @@ function selectOption(opt, breadcrumb) {
     case "app":
       dispatch({
         type: "runEffect",
-        run: async () => {
-          await hs.application.launchOrFocus(action.bundleID);
-          hs.application.matchingBundleID(action.bundleID)?.activate();
-        }
+        run: () => focusApp(action.bundleID)
       });
       break;
     case "cmd":
@@ -963,12 +964,13 @@ function startMouseWatcher() {
   );
   mouseTap?.start();
 }
-function show(menuTree2) {
+function show(menuTree2, opts = {}) {
   showStartMs = nowMs();
   dispatch({ type: "close" });
   showPlaceholderInitial();
   dispatch({ type: "openSubmenu", options: menuTree2, breadcrumb: [] });
-  armRevealTimer();
+  if (opts.revealImmediately) revealMenu();
+  else armRevealTimer();
 }
 
 // node_modules/unicode-emoji-json/data-by-emoji.json
@@ -17383,6 +17385,17 @@ var SINGLE_CHARS = [
   "k",
   "l"
 ];
+var NUMBER_CHARS = [
+  "s",
+  "d",
+  "f",
+  "w",
+  "e",
+  "r",
+  "x",
+  "c",
+  "v"
+];
 function capacity(single = SINGLE_CHARS) {
   return single.length;
 }
@@ -17445,9 +17458,9 @@ async function resolveState() {
   }
   return { state, current };
 }
-var ALACRITTY_BUNDLE_ID = "io.alacritty";
+var ALACRITTY_BUNDLE_ID = "org.alacritty";
 function focusAlacritty() {
-  void hs.application.launchOrFocus(ALACRITTY_BUNDLE_ID);
+  void focusApp(ALACRITTY_BUNDLE_ID);
 }
 function reportFailure(reply) {
   if (reply?.ok) return false;
@@ -17471,26 +17484,8 @@ async function reviveSession(name) {
   await loginShell(`zellij attach --create-background ${shellQuote(name)}`);
   await switchToSession(name);
 }
-function capped(list) {
-  return list.slice(0, capacity());
-}
-function otherSessions(state) {
-  const current = state.attached[0];
-  return state.sessions.map((s) => s.name).filter((name) => name !== current);
-}
-async function switchSessionItem() {
-  const state = await fetchState();
-  const target = state ? otherSessions(state)[0] : void 0;
-  return {
-    key: "s",
-    label: target ? `Switch session \u2192 ${target}` : "Switch session",
-    action: {
-      kind: "callback",
-      run: () => {
-        if (target) void switchToSession(target);
-      }
-    }
-  };
+function capped(list, pool = SINGLE_CHARS) {
+  return list.slice(0, capacity(pool));
 }
 async function tabsSubmenu() {
   const resolved = await resolveState();
@@ -17498,9 +17493,10 @@ async function tabsSubmenu() {
   const { state, current } = resolved;
   const session = state.sessions.find((s) => s.name === current);
   const tabs = capped(
-    [...session?.tabs ?? []].sort((a, b) => a.position - b.position)
+    [...session?.tabs ?? []].sort((a, b) => a.position - b.position),
+    NUMBER_CHARS
   );
-  const labels = generate(tabs.length);
+  const labels = generate(tabs.length, NUMBER_CHARS);
   return tabs.map((tab, i) => ({
     key: labels[i],
     label: tab.name,
@@ -17538,7 +17534,9 @@ async function jumpSpec() {
         tab: null,
         exited: false
       });
-    for (const tab of [...session.tabs].sort((a, b) => a.position - b.position)) {
+    for (const tab of [...session.tabs].sort(
+      (a, b) => a.position - b.position
+    )) {
       if (isCurrent && tab.active) continue;
       choices.push({
         text: `${session.name} \u203A ${tab.name}`,
@@ -17572,7 +17570,31 @@ async function jumpSpec() {
 }
 async function items() {
   return [
-    await switchSessionItem(),
+    {
+      key: "s",
+      label: "Switch session",
+      action: {
+        kind: "submenu",
+        submenu: async () => {
+          const state = await fetchState();
+          if (!state) return [];
+          const labels = generate(
+            state.sessions.length,
+            NUMBER_CHARS
+          );
+          return state.sessions.map(
+            (session, i) => ({
+              key: labels[i],
+              label: session.name,
+              action: {
+                kind: "callback",
+                run: () => switchToSession(session.name)
+              }
+            })
+          );
+        }
+      }
+    },
     {
       key: "f",
       label: "Find session/tab",
@@ -18047,15 +18069,17 @@ var hotkeys = [
     ),
     null
   ),
-  // LEADER MENU (Hyper+M) -- LeaderKey-style popup.
   hs.hotkey.bind(hyper, "space", () => show(menuTree), null),
   // ZELLIJ MENU (Hyper+G) -- the leader menu's "j" submenu, opened directly.
   // Its items need a zj_hs_jump state fetch first, so the menu shows once
-  // that resolves.
+  // that resolves -- and then without the usual reveal delay, since the
+  // items' labels are meant to be read.
   hs.hotkey.bind(
     hyper,
     "g",
-    () => void items().then((items2) => show(items2)),
+    () => void items().then(
+      (items2) => show(items2, { revealImmediately: true })
+    ),
     null
   )
 ];

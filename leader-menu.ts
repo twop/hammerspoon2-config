@@ -359,6 +359,16 @@ function resolveIcon(opt: MenuItem): string | HSImage | null {
 	return null;
 }
 
+// What an "app" MenuAction does -- exported so modules that bring an app
+// forward from their own callbacks (e.g. zellij-menu.ts after a switch)
+// get the same behavior. launchOrFocus() alone launches/unhides but
+// doesn't reliably make an already-running app frontmost, hence the
+// explicit activate() once it resolves.
+export async function focusApp(bundleID: string): Promise<void> {
+	await hs.application.launchOrFocus(bundleID);
+	hs.application.matchingBundleID(bundleID)?.activate();
+}
+
 function runShellCommand(path: string, args: string[]): void {
 	const task = hs.task.create(path, args, null, null, null);
 	task.start();
@@ -409,10 +419,7 @@ function selectOption(opt: MenuItem, breadcrumb: string[]): void {
 		case "app":
 			dispatch({
 				type: "runEffect",
-				run: async () => {
-					await hs.application.launchOrFocus(action.bundleID);
-					hs.application.matchingBundleID(action.bundleID)?.activate();
-				},
+				run: () => focusApp(action.bundleID),
 			});
 			break;
 		case "cmd":
@@ -798,10 +805,19 @@ function startMouseWatcher(): void {
 // PUBLIC API
 // ============================================================
 
-export function show(menuTree: MenuItem[]): void {
+export interface ShowOptions {
+	// Skip the REVEAL_DELAY_SECONDS wait and draw the menu right away -- for
+	// menus whose items are worth reading (e.g. zellij-menu.ts's live
+	// "Switch session → X" label) rather than driven from muscle memory.
+	// Sticky for the session: once revealed, armRevealTimer() no-ops.
+	revealImmediately?: boolean;
+}
+
+export function show(menuTree: MenuItem[], opts: ShowOptions = {}): void {
 	showStartMs = nowMs();
 	dispatch({ type: "close" }); // defensive: never stack a new menu/timers on a stale one
 	showPlaceholderInitial();
 	dispatch({ type: "openSubmenu", options: menuTree, breadcrumb: [] }); // eventtap is live immediately; the real menu isn't drawn yet
-	armRevealTimer();
+	if (opts.revealImmediately) revealMenu();
+	else armRevealTimer();
 }

@@ -27,15 +27,19 @@ const hotkeys = [
 			),
 		null,
 	),
-	// LEADER MENU (Hyper+M) -- LeaderKey-style popup.
+
 	hs.hotkey.bind(hyper, "space", () => LeaderMenu.show(menuTree), null),
 	// ZELLIJ MENU (Hyper+G) -- the leader menu's "j" submenu, opened directly.
 	// Its items need a zj_hs_jump state fetch first, so the menu shows once
-	// that resolves.
+	// that resolves -- and then without the usual reveal delay, since the
+	// items' labels are meant to be read.
 	hs.hotkey.bind(
 		hyper,
 		"g",
-		() => void ZellijMenu.items().then((items) => LeaderMenu.show(items)),
+		() =>
+			void ZellijMenu.items().then((items) =>
+				LeaderMenu.show(items, { revealImmediately: true }),
+			),
 		null,
 	),
 ];

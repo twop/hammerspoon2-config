@@ -9,8 +9,9 @@
 
 import * as KeyLabels from "./key-labels";
 import { shellQuote } from "./termview";
-import type { MenuItem } from "./leader-menu";
+import { focusApp, type MenuItem } from "./leader-menu";
 import { eraseChooser, type ChooserSpec } from "./chooser-runtime";
+import { menuTree } from "./leader-menu-config";
 
 // hs.task.shell runs commands through a bare, non-login /bin/sh -- PATH is
 // just the launchd default (/usr/bin:/bin:/usr/sbin:/sbin), so a plain
@@ -136,10 +137,10 @@ async function resolveState(): Promise<{
 // Bundle ID, not a path -- v2's launchOrFocus() takes bundle IDs only (see
 // leader-menu-config.ts's APP_BUNDLE_IDS for the same adjustment applied
 // to the rest of the menu's app launchers).
-const ALACRITTY_BUNDLE_ID = "io.alacritty";
+const ALACRITTY_BUNDLE_ID = "org.alacritty";
 
 function focusAlacritty(): void {
-	void hs.application.launchOrFocus(ALACRITTY_BUNDLE_ID);
+	void focusApp(ALACRITTY_BUNDLE_ID);
 }
 
 function reportFailure(reply: ZjReply | null): boolean {
@@ -179,37 +180,11 @@ async function reviveSession(name: string): Promise<void> {
 // Caps a list at KeyLabels' single-char capacity so every item actually
 // gets a key -- rather than generating multi-char labels for the
 // overflow, extra sessions/tabs just aren't listed.
-function capped<T>(list: T[]): T[] {
-	return list.slice(0, KeyLabels.capacity());
-}
-
-// Every live session except the attached one (switching to it would be a
-// no-op), in the plugin's order.
-function otherSessions(state: ZjState): string[] {
-	const current = state.attached[0];
-	return state.sessions.map((s) => s.name).filter((name) => name !== current);
-}
-
-// cmd+tab-style toggle: relies on the plugin listing sessions most recent
-// first, so the first one that isn't attached is the one we came from.
-// Deliberately skips resolveState()'s alerts: they're fine as a reaction to
-// a deliberate pick, but firing one just to decide how to label this item
-// -- on every open of the Zellij category -- risks stealing focus and
-// tripping the leader menu's own focus-steal watcher, closing the menu
-// before it even renders.
-async function switchSessionItem(): Promise<MenuItem> {
-	const state = await fetchState();
-	const target = state ? otherSessions(state)[0] : undefined;
-	return {
-		key: "s",
-		label: target ? `Switch session → ${target}` : "Switch session",
-		action: {
-			kind: "callback",
-			run: () => {
-				if (target) void switchToSession(target);
-			},
-		},
-	};
+function capped<T>(
+	list: T[],
+	pool: readonly string[] = KeyLabels.SINGLE_CHARS,
+): T[] {
+	return list.slice(0, KeyLabels.capacity(pool));
 }
 
 export async function tabsSubmenu(): Promise<MenuItem[]> {
@@ -218,10 +193,12 @@ export async function tabsSubmenu(): Promise<MenuItem[]> {
 	const { state, current } = resolved;
 
 	const session = state.sessions.find((s) => s.name === current);
+	// Numbered by position: tab N is always key N.
 	const tabs = capped(
 		[...(session?.tabs ?? [])].sort((a, b) => a.position - b.position),
+		KeyLabels.NUMBER_CHARS,
 	);
-	const labels = KeyLabels.generate(tabs.length);
+	const labels = KeyLabels.generate(tabs.length, KeyLabels.NUMBER_CHARS);
 	return tabs.map((tab, i) => ({
 		key: labels[i]!,
 		label: tab.name,
@@ -274,7 +251,9 @@ async function jumpSpec(): Promise<ChooserSpec<JumpChoice>> {
 				tab: null,
 				exited: false,
 			});
-		for (const tab of [...session.tabs].sort((a, b) => a.position - b.position)) {
+		for (const tab of [...session.tabs].sort(
+			(a, b) => a.position - b.position,
+		)) {
 			if (isCurrent && tab.active) continue;
 			choices.push({
 				text: `${session.name} › ${tab.name}`,
@@ -314,7 +293,34 @@ async function jumpSpec(): Promise<ChooserSpec<JumpChoice>> {
 // below) and directly by init.ts's Hyper+G hotkey.
 export async function items(): Promise<MenuItem[]> {
 	return [
-		await switchSessionItem(),
+		{
+			key: "s",
+			label: "Switch session",
+			action: {
+				kind: "submenu",
+				submenu: async () => {
+					const state = await fetchState();
+					if (!state) return [];
+
+					const labels = KeyLabels.generate(
+						state.sessions.length,
+						KeyLabels.NUMBER_CHARS,
+					);
+
+					return state.sessions.map(
+						(session, i) =>
+							({
+								key: labels[i],
+								label: session.name,
+								action: {
+									kind: "callback",
+									run: () => switchToSession(session.name),
+								},
+							}) satisfies MenuItem,
+					);
+				},
+			},
+		},
 		{
 			key: "f",
 			label: "Find session/tab",

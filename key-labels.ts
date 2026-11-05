@@ -1,5 +1,6 @@
-// Single-character hint-label allocator: assigns letters to a list of items
-// in a fixed ergonomic priority order. Not tied to any particular menu --
+// Single-character hint-label allocator: assigns keys to a list of items
+// in order from a pool -- SINGLE_CHARS (ergonomic letters) for unordered
+// lists, NUMBER_CHARS (number-layer order) for numbered ones. Not tied to any particular menu --
 // used by zellij-menu.ts to label a dynamically-sized list of
 // sessions/tabs, capping the list at the pool size (see capacity()) rather
 // than trying to label more items than there are convenient single keys
@@ -23,6 +24,24 @@ export const SINGLE_CHARS = [
 	"j",
 	"k",
 	"l",
+] as const;
+
+// For numbered lists (e.g. zellij tabs): item N gets the key that sits
+// under digit N on the keyboard's number layer, so a given position always
+// has the same key and matches its number:
+//   s d f    1 2 3
+//   w e r -> 4 5 6
+//   x c v    7 8 9
+export const NUMBER_CHARS = [
+	"s",
+	"d",
+	"f",
+	"w",
+	"e",
+	"r",
+	"x",
+	"c",
+	"v",
 ] as const;
 
 export function capacity(single: readonly string[] = SINGLE_CHARS): number {
