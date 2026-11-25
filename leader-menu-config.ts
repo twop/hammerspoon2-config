@@ -134,7 +134,15 @@ function openDailyNote(): void {
 }
 
 function openDailyNoteInShelv(): void {
-	hs.task.create("/usr/bin/open", ["-a", "Shelv", ensureDailyNote()], null, null, null).start();
+	hs.task
+		.create(
+			"/usr/bin/open",
+			["-a", "Shelv", ensureDailyNote()],
+			null,
+			null,
+			null,
+		)
+		.start();
 }
 
 // ============================================================
@@ -271,7 +279,9 @@ export const menuTree: MenuItem[] = [
 		key: "e",
 		label: "Pick emoji",
 		icon: symbol("face.smiling"),
-		action: Url("raycast://extensions/raycast/emoji-symbols/search-emoji-symbols"),
+		action: Url(
+			"raycast://extensions/raycast/emoji-symbols/search-emoji-symbols",
+		),
 	},
 
 	{
@@ -345,7 +355,9 @@ export const menuTree: MenuItem[] = [
 				key: "a",
 				label: "Select space",
 				icon: symbol("list.star"),
-				action: Url("raycast://extensions/the-browser-company/arc/search-spaces"),
+				action: Url(
+					"raycast://extensions/the-browser-company/arc/search-spaces",
+				),
 			},
 			{
 				key: "s",
@@ -357,7 +369,9 @@ export const menuTree: MenuItem[] = [
 				key: "t",
 				label: "new tab",
 				icon: symbol("plus.square.fill.on.square.fill"),
-				action: Url("raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D"),
+				action: Url(
+					"raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D",
+				),
 			},
 		]),
 	},
@@ -374,7 +388,9 @@ export const menuTree: MenuItem[] = [
 					{
 						key: ",",
 						label: "Play/Pause",
-						action: Url("raycast://extensions/fedevitaledev/music/toggle-play-pause"),
+						action: Url(
+							"raycast://extensions/fedevitaledev/music/toggle-play-pause",
+						),
 					},
 				]),
 			},
@@ -455,5 +471,5 @@ export const menuTree: MenuItem[] = [
 		]),
 	},
 
-	ZellijMenu.node,
+	{ key: "j", label: "Zellij", action: ZellijMenu.menu },
 ];

@@ -493,7 +493,7 @@ var App = (bundleID) => ({ kind: "app", bundleID });
 var Cmd = (path, ...args) => ({ kind: "cmd", path, args });
 var Url = (url) => ({ kind: "url", url });
 var Callback = (run) => ({ kind: "callback", run });
-var REVEAL_DELAY_SECONDS = 0.5;
+var REVEAL_DELAY_SECONDS = 0.3;
 var PLACEHOLDER_ENTER_DURATION = 0.2;
 var SPLIT_TRANSITION_DURATION = 0.22;
 var SLIDE_OFFSET_PX = 14;
@@ -662,7 +662,10 @@ function update(model2, msg) {
     }
     case "openChooser":
       return [
-        { ...model2, stack: [...model2.stack, { kind: "chooser", spec: msg.spec }] },
+        {
+          ...model2,
+          stack: [...model2.stack, { kind: "chooser", spec: msg.spec }]
+        },
         []
       ];
     case "back":
@@ -17742,7 +17745,6 @@ var menu = PrefetchSubmenu(requireState, (state) => [
     action: Chooser(() => newSessionSpec(state.attached[0]))
   }
 ]);
-var node = { key: "j", label: "Zellij", action: menu };
 var tabsMenu = PrefetchSubmenu(requireState, tabItems);
 
 // leader-menu-config.ts
@@ -17804,7 +17806,13 @@ function openDailyNote() {
   summon("journal", "hx " + shellQuote(ensureDailyNote()));
 }
 function openDailyNoteInShelv() {
-  hs.task.create("/usr/bin/open", ["-a", "Shelv", ensureDailyNote()], null, null, null).start();
+  hs.task.create(
+    "/usr/bin/open",
+    ["-a", "Shelv", ensureDailyNote()],
+    null,
+    null,
+    null
+  ).start();
 }
 var menuTree = [
   {
@@ -17931,7 +17939,9 @@ var menuTree = [
     key: "e",
     label: "Pick emoji",
     icon: symbol("face.smiling"),
-    action: Url("raycast://extensions/raycast/emoji-symbols/search-emoji-symbols")
+    action: Url(
+      "raycast://extensions/raycast/emoji-symbols/search-emoji-symbols"
+    )
   },
   {
     key: "E",
@@ -17997,7 +18007,9 @@ var menuTree = [
         key: "a",
         label: "Select space",
         icon: symbol("list.star"),
-        action: Url("raycast://extensions/the-browser-company/arc/search-spaces")
+        action: Url(
+          "raycast://extensions/the-browser-company/arc/search-spaces"
+        )
       },
       {
         key: "s",
@@ -18009,7 +18021,9 @@ var menuTree = [
         key: "t",
         label: "new tab",
         icon: symbol("plus.square.fill.on.square.fill"),
-        action: Url("raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D")
+        action: Url(
+          "raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D"
+        )
       }
     ])
   },
@@ -18025,7 +18039,9 @@ var menuTree = [
           {
             key: ",",
             label: "Play/Pause",
-            action: Url("raycast://extensions/fedevitaledev/music/toggle-play-pause")
+            action: Url(
+              "raycast://extensions/fedevitaledev/music/toggle-play-pause"
+            )
           }
         ])
       },
@@ -18102,7 +18118,7 @@ var menuTree = [
       }
     ])
   },
-  node
+  { key: "j", label: "Zellij", action: menu }
 ];
 
 // init.ts

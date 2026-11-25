@@ -181,7 +181,9 @@ async function killSession(name: string): Promise<void> {
 	hs.ui.alert(message).show();
 }
 
-function newSessionSpec(current: string | undefined): ChooserSpec<{ text: string }> {
+function newSessionSpec(
+	current: string | undefined,
+): ChooserSpec<{ text: string }> {
 	return textInput({
 		placeholder: "New session name…",
 		preview: (query) =>
@@ -362,8 +364,6 @@ export const menu = PrefetchSubmenu(requireState, (state) => [
 		action: Chooser(() => newSessionSpec(state.attached[0])),
 	},
 ]);
-
-export const node: MenuItem = { key: "j", label: "Zellij", action: menu };
 
 // Just the attached session's tabs (the "t" list above) as its own root,
 // for init.ts's Hyper+T -- same one-fetch prefetch, no menu level first.

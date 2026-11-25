@@ -78,7 +78,10 @@ export type ChooserAction = Branded<{
 	readonly kind: "chooser";
 	readonly spec: ChooserSource;
 }>;
-export type AppAction = Branded<{ readonly kind: "app"; readonly bundleID: string }>;
+export type AppAction = Branded<{
+	readonly kind: "app";
+	readonly bundleID: string;
+}>;
 export type CmdAction = Branded<{
 	readonly kind: "cmd";
 	readonly path: string;
@@ -187,7 +190,7 @@ interface MountedScene {
 // TIMING / ANIMATION
 // ============================================================
 
-const REVEAL_DELAY_SECONDS = 0.5;
+const REVEAL_DELAY_SECONDS = 0.3;
 const PLACEHOLDER_ENTER_DURATION = 0.2;
 const SPLIT_TRANSITION_DURATION = 0.22;
 const SLIDE_OFFSET_PX = 14;
@@ -467,7 +470,10 @@ function update(model: Model, msg: Msg): [Model, Effect[]] {
 		}
 		case "openChooser":
 			return [
-				{ ...model, stack: [...model.stack, { kind: "chooser", spec: msg.spec }] },
+				{
+					...model,
+					stack: [...model.stack, { kind: "chooser", spec: msg.spec }],
+				},
 				[],
 			];
 		case "back":
