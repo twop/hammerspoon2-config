@@ -19,7 +19,7 @@ import {
 	Submenu,
 	type MenuItem,
 } from "./leader-menu";
-import type { ChooserSpec } from "./chooser-runtime";
+import { textInput, type ChooserSpec } from "./chooser-runtime";
 import { menuTree } from "./leader-menu-config";
 
 interface ZjTab {
@@ -155,14 +155,44 @@ function focusTab(
 	return sendToAttached(current, "focus", { session, tab });
 }
 
-// Resurrects an EXITED session as a live background one (no client attached
-// yet, so nothing currently attached is disturbed), then switches to it.
-async function reviveSession(
+// Brings `name` up as a live background session -- resurrecting it if it's
+// EXITED, creating it if it doesn't exist at all (no client attached yet,
+// so nothing currently attached is disturbed) -- then switches to it. An
+// already-live name is a no-op attach followed by a plain switch.
+async function startSession(
 	current: string | undefined,
 	name: string,
 ): Promise<void> {
 	await loginShell(`zellij attach --create-background ${shellQuote(name)}`);
 	await switchToSession(current, name);
+}
+
+// Stops a live session; zellij keeps it resurrectable, so it shows up
+// under "Revive session" afterwards. </dev/null for the same reason as
+// pipe(): the CLI must not sit waiting on hs.task's open stdin.
+async function killSession(name: string): Promise<void> {
+	const { exitCode, stderr } = await loginShell(
+		`zellij kill-session ${shellQuote(name)} </dev/null`,
+	);
+	const message =
+		exitCode === 0
+			? `Zellij: killed ${name}`
+			: `Zellij: kill failed: ${stderr.trim() || `exit ${exitCode}`}`;
+	hs.ui.alert(message).show();
+}
+
+function newSessionSpec(current: string | undefined): ChooserSpec<{ text: string }> {
+	return textInput({
+		placeholder: "New session name…",
+		preview: (query) =>
+			query.trim()
+				? `Create session: ${query.trim()}`
+				: "Type a name, then press ⏎",
+		submitLabel: "Create session",
+		// Deferred past the chooser's own hide, same as jumpSpec's onSelect.
+		onSubmit: (name) =>
+			hs.timer.doAfter(0, () => void startSession(current, name)),
+	});
 }
 
 // Caps a list at KeyLabels' single-char capacity so every item actually
@@ -196,6 +226,23 @@ function sessionItems(state: ZjState): MenuItem[] {
 	}));
 }
 
+// Same numbering as sessionItems, so a session has one key under both "s"
+// and "k". The attached one is listed too, marked, since killing it closes
+// the current client.
+function killItems(state: ZjState): MenuItem[] {
+	const current = state.attached[0];
+	const labels = KeyLabels.generate(
+		state.sessions.length,
+		KeyLabels.NUMBER_CHARS,
+	);
+	return state.sessions.map((session, i) => ({
+		key: labels[i]!,
+		label:
+			session.name === current ? `${session.name} (attached)` : session.name,
+		action: Callback(() => void killSession(session.name)),
+	}));
+}
+
 // Tabs of the attached session; none when no client is attached.
 function tabItems(state: ZjState): MenuItem[] {
 	const current = state.attached[0];
@@ -221,7 +268,7 @@ function reviveItems(state: ZjState): MenuItem[] {
 	return exited.map((name, i) => ({
 		key: labels[i]!,
 		label: name,
-		action: Callback(() => void reviveSession(current, name)),
+		action: Callback(() => void startSession(current, name)),
 	}));
 }
 
@@ -281,7 +328,7 @@ function jumpSpec(state: ZjState): ChooserSpec<JumpChoice> {
 			// Deferred past the chooser's own hide, same as the other modules'
 			// terminal side effects (see chooser-runtime.ts's onSelect).
 			hs.timer.doAfter(0, () => {
-				if (choice.exited) void reviveSession(current, choice.session);
+				if (choice.exited) void startSession(current, choice.session);
 				else if (choice.tab === null)
 					void switchToSession(current, choice.session);
 				else void focusTab(current, choice.session, choice.tab);
@@ -308,6 +355,12 @@ export const menu = PrefetchSubmenu(requireState, (state) => [
 	},
 	{ key: "t", label: "Switch tab", action: Submenu(tabItems(state)) },
 	{ key: "r", label: "Revive session", action: Submenu(reviveItems(state)) },
+	{ key: "k", label: "Kill session", action: Submenu(killItems(state)) },
+	{
+		key: "n",
+		label: "New session",
+		action: Chooser(() => newSessionSpec(state.attached[0])),
+	},
 ]);
 
 export const node: MenuItem = { key: "j", label: "Zellij", action: menu };

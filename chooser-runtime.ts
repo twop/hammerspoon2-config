@@ -36,6 +36,46 @@ export interface ChooserSpec<T extends object = Record<string, unknown>> {
 	optionsBar?: (row: T, chooser: HSChooser) => ChoiceOption[] | undefined;
 }
 
+// Free-text input: hs.chooser's query field is the input -- it's the one
+// text input this config can actually style, and already has working
+// Cmd+Enter detection via chooser-options-bar.ts. A single row previews
+// what submitting will do, recomputed on every keystroke (see
+// mountChooser()'s onQueryChange refresh).
+export interface TextInputOptions {
+	placeholder: string;
+	preview: (query: string) => string;
+	submitLabel: string; // ⌘Enter legend label
+	onSubmit: (text: string) => void; // trimmed; never called with ""
+	width?: number;
+}
+
+export function textInput(opts: TextInputOptions): ChooserSpec<{ text: string }> {
+	const submit = (query: string): void => {
+		const text = query.trim();
+		if (text) opts.onSubmit(text);
+	};
+	return {
+		width: opts.width ?? 0.35,
+		visibleRows: 1,
+		placeholder: opts.placeholder,
+		choices: (query) => [{ text: opts.preview(query) }],
+		// Plain Enter confirms the one row -- submits the current query.
+		onSelect: (_choice, chooser) => submit(chooser.query),
+		optionsBar: (_row, chooser) => [
+			{
+				mods: ["cmd"],
+				key: "return",
+				label: opts.submitLabel,
+				run: () => {
+					const query = chooser.query;
+					chooser.hide();
+					submit(query);
+				},
+			},
+		],
+	};
+}
+
 // ChooserSpec<T> isn't a safe structural upcast to the erased
 // ChooserSpec (= ChooserSpec<Record<string, unknown>>) on its own --
 // onSelect/optionsBar's parameter position is contravariant, so a function

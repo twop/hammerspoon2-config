@@ -405,6 +405,32 @@ function attachOptionsBar(chooser, getOptionsForRow) {
 }
 
 // chooser-runtime.ts
+function textInput(opts) {
+  const submit = (query) => {
+    const text2 = query.trim();
+    if (text2) opts.onSubmit(text2);
+  };
+  return {
+    width: opts.width ?? 0.35,
+    visibleRows: 1,
+    placeholder: opts.placeholder,
+    choices: (query) => [{ text: opts.preview(query) }],
+    // Plain Enter confirms the one row -- submits the current query.
+    onSelect: (_choice, chooser) => submit(chooser.query),
+    optionsBar: (_row, chooser) => [
+      {
+        mods: ["cmd"],
+        key: "return",
+        label: opts.submitLabel,
+        run: () => {
+          const query = chooser.query;
+          chooser.hide();
+          submit(query);
+        }
+      }
+    ]
+  };
+}
 function eraseChooser(spec8) {
   return {
     placeholder: spec8.placeholder,
@@ -17472,28 +17498,12 @@ function appendToDailyNote(text2) {
   hs.ui.alert("Appended to daily note").duration(0.6).show();
 }
 function spec7() {
-  return {
-    width: 0.35,
-    visibleRows: 1,
+  return textInput({
     placeholder: "Type a quick note\u2026",
-    choices: (query) => [
-      { text: query ? `Append: ${query}` : "Type a note, then press \u23CE to append" }
-    ],
-    // Plain Enter confirms the row -- appends the current query.
-    onSelect: (_choice, chooser) => appendToDailyNote(chooser.query),
-    optionsBar: (_row, chooser) => [
-      {
-        mods: ["cmd"],
-        key: "return",
-        label: "Append to daily note",
-        run: () => {
-          const text2 = chooser.query;
-          chooser.hide();
-          appendToDailyNote(text2);
-        }
-      }
-    ]
-  };
+    preview: (query) => query ? `Append: ${query}` : "Type a note, then press \u23CE to append",
+    submitLabel: "Append to daily note",
+    onSubmit: appendToDailyNote
+  });
 }
 
 // key-labels.ts
@@ -17587,9 +17597,25 @@ function switchToSession(current, name) {
 function focusTab(current, session, tab) {
   return sendToAttached(current, "focus", { session, tab });
 }
-async function reviveSession(current, name) {
+async function startSession(current, name) {
   await loginShell(`zellij attach --create-background ${shellQuote(name)}`);
   await switchToSession(current, name);
+}
+async function killSession(name) {
+  const { exitCode, stderr } = await loginShell(
+    `zellij kill-session ${shellQuote(name)} </dev/null`
+  );
+  const message = exitCode === 0 ? `Zellij: killed ${name}` : `Zellij: kill failed: ${stderr.trim() || `exit ${exitCode}`}`;
+  hs.ui.alert(message).show();
+}
+function newSessionSpec(current) {
+  return textInput({
+    placeholder: "New session name\u2026",
+    preview: (query) => query.trim() ? `Create session: ${query.trim()}` : "Type a name, then press \u23CE",
+    submitLabel: "Create session",
+    // Deferred past the chooser's own hide, same as jumpSpec's onSelect.
+    onSubmit: (name) => hs.timer.doAfter(0, () => void startSession(current, name))
+  });
 }
 function capped(list, pool = SINGLE_CHARS) {
   return list.slice(0, capacity(pool));
@@ -17609,6 +17635,18 @@ function sessionItems(state) {
     key: labels[i],
     label: session.name,
     action: Callback(() => void switchToSession(current, session.name))
+  }));
+}
+function killItems(state) {
+  const current = state.attached[0];
+  const labels = generate(
+    state.sessions.length,
+    NUMBER_CHARS
+  );
+  return state.sessions.map((session, i) => ({
+    key: labels[i],
+    label: session.name === current ? `${session.name} (attached)` : session.name,
+    action: Callback(() => void killSession(session.name))
   }));
 }
 function tabItems(state) {
@@ -17633,7 +17671,7 @@ function reviveItems(state) {
   return exited.map((name, i) => ({
     key: labels[i],
     label: name,
-    action: Callback(() => void reviveSession(current, name))
+    action: Callback(() => void startSession(current, name))
   }));
 }
 function jumpSpec(state) {
@@ -17676,7 +17714,7 @@ function jumpSpec(state) {
     searchSubText: true,
     onSelect: (choice) => {
       hs.timer.doAfter(0, () => {
-        if (choice.exited) void reviveSession(current, choice.session);
+        if (choice.exited) void startSession(current, choice.session);
         else if (choice.tab === null)
           void switchToSession(current, choice.session);
         else void focusTab(current, choice.session, choice.tab);
@@ -17696,7 +17734,13 @@ var menu = PrefetchSubmenu(requireState, (state) => [
     action: Chooser(() => jumpSpec(state))
   },
   { key: "t", label: "Switch tab", action: Submenu(tabItems(state)) },
-  { key: "r", label: "Revive session", action: Submenu(reviveItems(state)) }
+  { key: "r", label: "Revive session", action: Submenu(reviveItems(state)) },
+  { key: "k", label: "Kill session", action: Submenu(killItems(state)) },
+  {
+    key: "n",
+    label: "New session",
+    action: Chooser(() => newSessionSpec(state.attached[0]))
+  }
 ]);
 var node = { key: "j", label: "Zellij", action: menu };
 
