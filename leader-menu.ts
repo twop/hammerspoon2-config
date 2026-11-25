@@ -54,9 +54,6 @@ const OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"]!;
 // MENU TREE TYPES
 // ============================================================
 
-export type SubmenuSource =
-	| MenuItem[]
-	| (() => MenuItem[] | Promise<MenuItem[]>);
 export type ChooserSource = () => ChooserSpec | Promise<ChooserSpec>;
 
 // One shared phantom brand (type-only -- nothing exists at runtime) so a
@@ -68,7 +65,14 @@ type Branded<T> = T & { readonly [MenuActionBrand]: true };
 
 export type SubmenuAction = Branded<{
 	readonly kind: "submenu";
-	readonly submenu: SubmenuSource;
+	readonly submenu: MenuItem[];
+}>;
+// Its data type is erased by fusing load + render into one thunk (see
+// PrefetchSubmenu() below) -- the engine only ever needs the final items.
+// The action object itself is the engine's cache key, see Model.loads.
+export type PrefetchSubmenuAction = Branded<{
+	readonly kind: "prefetchSubmenu";
+	readonly load: () => Promise<MenuItem[]>;
 }>;
 export type ChooserAction = Branded<{
 	readonly kind: "chooser";
@@ -86,16 +90,34 @@ export type CallbackAction = Branded<{
 	readonly run: () => void;
 }>;
 
+export type AnySubmenuAction = SubmenuAction | PrefetchSubmenuAction;
+
 export type MenuAction =
 	| SubmenuAction
+	| PrefetchSubmenuAction
 	| ChooserAction
 	| AppAction
 	| CmdAction
 	| UrlAction
 	| CallbackAction;
 
-export const Submenu = (submenu: SubmenuSource): SubmenuAction =>
+export const Submenu = (submenu: MenuItem[]): SubmenuAction =>
 	({ kind: "submenu", submenu }) as SubmenuAction;
+
+// A submenu whose items come from async data (e.g. zellij-menu.ts's one
+// zj_hs_jump state fetch feeding all its children). load() starts as soon
+// as the level containing this item mounts -- not on selection -- and its
+// result is cached for the rest of the show() session, so by the time the
+// key is pressed the items are usually already there. A rejected load() or
+// a throwing render() shows as an error row in the submenu itself.
+export const PrefetchSubmenu = <T>(
+	load: () => Promise<T>,
+	render: (data: T) => MenuItem[],
+): PrefetchSubmenuAction =>
+	({
+		kind: "prefetchSubmenu",
+		load: async () => render(await load()),
+	}) as PrefetchSubmenuAction;
 
 // Generic over the spec's row type and erases it here, so call sites pass
 // their module's typed spec() straight through instead of each wrapping it
@@ -138,9 +160,24 @@ export interface MenuItem {
 // need. A future third kind (e.g. a chooser with a preview pane, carrying
 // its own layout) would be a sibling variant with its own branch in
 // mountScene() below, without touching update().
-export type Scene =
-	| { kind: "menu"; options: MenuItem[]; breadcrumb: string[] }
-	| { kind: "chooser"; spec: ChooserSpec };
+//
+// A menu scene carries a snapshot of its content rather than reading the
+// load cache at render time: when a load settles, update() swaps in a new
+// scene object, and that identity change is what makes dispatch() remount
+// it -- no separate "content changed" diffing needed.
+type Remote =
+	| { status: "loading" }
+	| { status: "ready"; items: MenuItem[] }
+	| { status: "failed"; error: string };
+
+interface MenuScene {
+	kind: "menu";
+	source: PrefetchSubmenuAction | null; // null: a static Submenu
+	content: Remote;
+	breadcrumb: string[];
+}
+
+type Scene = MenuScene | { kind: "chooser"; spec: ChooserSpec };
 
 interface MountedScene {
 	hide(): void;
@@ -228,7 +265,7 @@ let canvas: HSCanvas | null = null;
 let placeholderCanvas: HSCanvas | null = null;
 let tap: HSEventTap | null = null;
 let mouseTap: HSEventTap | null = null;
-let model: Scene[] = []; // the stack, bottom -> top; [] means fully closed
+let model: Model = { session: 0, stack: [], loads: new Map() };
 let mounted: MountedScene | null = null;
 let revealed = false;
 let revealTimer: HSTimer | null = null;
@@ -283,37 +320,164 @@ function stopFocusWatcher(): void {
 // ENGINE: Scene stack (Model) / Msg / update / dispatch
 // ============================================================
 
+interface Model {
+	// Bumped by every show(); each in-flight load is tagged with the session
+	// it started in, so a result landing after a close/reopen is dropped.
+	session: number;
+	stack: Scene[]; // bottom -> top; [] means fully closed
+	// PrefetchSubmenu results for this session, keyed by action identity.
+	// Cleared on close, so a load still in flight then also finds no entry
+	// to settle into.
+	loads: Map<PrefetchSubmenuAction, Remote>;
+}
+
 type Msg =
-	| { type: "openSubmenu"; options: MenuItem[]; breadcrumb: string[] }
+	| { type: "open"; root: AnySubmenuAction } // from show(): starts a new session
+	| { type: "select"; action: AnySubmenuAction; breadcrumb: string[] }
+	| {
+			type: "loadSettled";
+			session: number;
+			action: PrefetchSubmenuAction;
+			result: Remote;
+	  }
 	| { type: "openChooser"; spec: ChooserSpec }
 	| { type: "back" }
 	| { type: "close" }
 	| { type: "runEffect"; run: () => void }; // app/cmd/url/callback all normalize to this
 
-type Cmd = (() => void) | null;
+// A side effect for dispatch() to run once the view has caught up, handed
+// dispatch itself so async work (a PrefetchSubmenu load) can report back
+// as a Msg instead of touching state directly.
+type Effect = (dispatch: (msg: Msg) => void) => void;
 
-// Pure: given the current stack and an event, what should the stack be
-// next, and is there a side effect ("Cmd") to run once the view has caught
-// up? "back" pops one Scene, or closes entirely if already at the root --
-// same whether the Scene below is another chooser or a menu level.
-function update(stack: Scene[], msg: Msg): [Scene[], Cmd] {
+const LOADING: Remote = { status: "loading" };
+
+function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+function loadEffect(session: number, action: PrefetchSubmenuAction): Effect {
+	return (dispatch) => {
+		action.load().then(
+			(items) =>
+				dispatch({
+					type: "loadSettled",
+					session,
+					action,
+					result: { status: "ready", items },
+				}),
+			(err: unknown) =>
+				dispatch({
+					type: "loadSettled",
+					session,
+					action,
+					result: { status: "failed", error: errorMessage(err) },
+				}),
+		);
+	};
+}
+
+// Starts a load for every not-yet-cached PrefetchSubmenu among a level's
+// items -- called whenever a level with ready content lands on the stack.
+// Mutates `loads`, which callers always pass as a fresh copy.
+function startPrefetches(
+	session: number,
+	loads: Map<PrefetchSubmenuAction, Remote>,
+	content: Remote,
+): Effect[] {
+	if (content.status !== "ready") return [];
+	const effects: Effect[] = [];
+	for (const { action } of content.items) {
+		if (action.kind !== "prefetchSubmenu" || loads.has(action)) continue;
+		loads.set(action, LOADING);
+		effects.push(loadEffect(session, action));
+	}
+	return effects;
+}
+
+function pushMenu(
+	model: Model,
+	action: AnySubmenuAction,
+	breadcrumb: string[],
+): [Model, Effect[]] {
+	const loads = new Map(model.loads);
+	const effects: Effect[] = [];
+	let content: Remote;
+	if (action.kind === "submenu") {
+		content = { status: "ready", items: action.submenu };
+	} else {
+		const cached = loads.get(action);
+		if (cached) {
+			content = cached;
+		} else {
+			// Selected before its parent level ever mounted (e.g. show()'s own
+			// root) -- start it now and show the loading state meanwhile.
+			content = LOADING;
+			loads.set(action, LOADING);
+			effects.push(loadEffect(model.session, action));
+		}
+	}
+	effects.push(...startPrefetches(model.session, loads, content));
+	const scene: MenuScene = {
+		kind: "menu",
+		source: action.kind === "prefetchSubmenu" ? action : null,
+		content,
+		breadcrumb,
+	};
+	return [{ ...model, stack: [...model.stack, scene], loads }, effects];
+}
+
+function closed(model: Model): Model {
+	return { ...model, stack: [], loads: new Map() };
+}
+
+// Pure: given the current model and an event, what should the model be
+// next, and which side effects should run once the view has caught up?
+// "back" pops one Scene, or closes entirely if already at the root -- same
+// whether the Scene below is another chooser or a menu level.
+function update(model: Model, msg: Msg): [Model, Effect[]] {
 	switch (msg.type) {
-		case "openSubmenu":
-			return [
-				[
-					...stack,
-					{ kind: "menu", options: msg.options, breadcrumb: msg.breadcrumb },
-				],
-				null,
-			];
+		case "open":
+			return pushMenu(
+				{ session: model.session + 1, stack: [], loads: new Map() },
+				msg.root,
+				[],
+			);
+		case "select":
+			return pushMenu(model, msg.action, msg.breadcrumb);
+		case "loadSettled": {
+			// Stale: from an earlier session, or this session was closed since.
+			if (msg.session !== model.session || !model.loads.has(msg.action)) {
+				return [model, []];
+			}
+			const loads = new Map(model.loads);
+			loads.set(msg.action, msg.result);
+			let onStack = false;
+			const stack = model.stack.map((scene) => {
+				if (scene.kind !== "menu" || scene.source !== msg.action) return scene;
+				onStack = true;
+				return { ...scene, content: msg.result };
+			});
+			// Its children only prefetch if it's actually showing -- a
+			// prefetched-but-unvisited level doesn't fan out further.
+			const effects = onStack
+				? startPrefetches(model.session, loads, msg.result)
+				: [];
+			return [{ ...model, stack, loads }, effects];
+		}
 		case "openChooser":
-			return [[...stack, { kind: "chooser", spec: msg.spec }], null];
+			return [
+				{ ...model, stack: [...model.stack, { kind: "chooser", spec: msg.spec }] },
+				[],
+			];
 		case "back":
-			return [stack.length > 1 ? stack.slice(0, -1) : [], null];
+			return model.stack.length > 1
+				? [{ ...model, stack: model.stack.slice(0, -1) }, []]
+				: [closed(model), []];
 		case "close":
-			return [[], null];
+			return [closed(model), []];
 		case "runEffect":
-			return [[], msg.run];
+			return [closed(model), [() => msg.run()]];
 	}
 }
 
@@ -333,39 +497,45 @@ function stopRevealTimerAndPlaceholder(): void {
 }
 
 function dispatch(msg: Msg): void {
-	const [next, cmd] = update(model, msg);
-	const prevTop = model[model.length - 1];
-	const nextTop = next[next.length - 1];
+	const [next, effects] = update(model, msg);
+	const prevTop = model.stack[model.stack.length - 1];
+	const nextTop = next.stack[next.stack.length - 1];
 	if (nextTop !== prevTop) {
 		mounted?.hide();
-		mounted = nextTop ? mountScene(nextTop, next.length > 1) : null;
+		mounted = nextTop ? mountScene(nextTop, next.stack.length > 1) : null;
 	}
-	if (next.length === 0) {
+	if (next.stack.length === 0) {
 		stopRevealTimerAndPlaceholder();
 		revealed = false;
 	}
 	model = next;
-	// Deferred: cmd often shows a real window (hs.chooser, launches an app,
+	// Deferred: an effect often shows a real window (hs.chooser, launches an app,
 	// ...) or otherwise interacts with focus -- running it synchronously
 	// here, still inside whatever eventtap/onSelect callback triggered this
 	// dispatch (itself mid-teardown of the previous scene's own canvas/tap),
 	// can leave the new thing created but never actually brought forward.
 	// One tick later, we're clear of that callback and it shows reliably.
-	if (cmd) hs.timer.doAfter(0, cmd);
+	for (const effect of effects) hs.timer.doAfter(0, () => effect(dispatch));
 }
 
 function mountScene(scene: Scene, canGoBack: boolean): MountedScene {
 	return scene.kind === "menu"
-		? mountMenu(scene.options, scene.breadcrumb)
+		? mountMenu(scene)
 		: mountChooserScene(scene.spec, canGoBack);
 }
 
-function mountMenu(options: MenuItem[], breadcrumb: string[]): MountedScene {
+// Selectable items of a menu scene -- none while loading or failed, so
+// only Escape/Delete do anything there (other keys are still swallowed).
+function sceneItems(scene: MenuScene): MenuItem[] {
+	return scene.content.status === "ready" ? scene.content.items : [];
+}
+
+function mountMenu(scene: MenuScene): MountedScene {
 	// Blind-typing grace period: keys are live immediately, but nothing is
 	// drawn until revealMenu() fires (or this mount is replaced by
 	// something else first) -- see armRevealTimer()/revealMenu() below.
-	if (revealed) renderMenu(options, breadcrumb);
-	bindKeys(options, breadcrumb);
+	if (revealed) renderMenu(scene);
+	bindKeys(sceneItems(scene), scene.breadcrumb);
 	startFocusWatcher();
 	startMouseWatcher();
 	return {
@@ -447,31 +617,17 @@ function runShellCommand(path: string, args: readonly string[]): void {
 function selectOption(opt: MenuItem, breadcrumb: string[]): void {
 	const action = opt.action;
 	switch (action.kind) {
-		case "submenu": {
-			// Resolved fresh on every selection (not cached) so it can reflect
-			// live external state (e.g. zellij-menu.ts's session/tab lists).
-			const newBreadcrumb = [...breadcrumb, opt.label];
-			const resolved =
-				typeof action.submenu === "function"
-					? action.submenu()
-					: action.submenu;
-			if (resolved instanceof Promise) {
-				void resolved.then((options) =>
-					dispatch({ type: "openSubmenu", options, breadcrumb: newBreadcrumb }),
-				);
-			} else {
-				dispatch({
-					type: "openSubmenu",
-					options: resolved,
-					breadcrumb: newBreadcrumb,
-				});
-			}
+		case "submenu":
+		case "prefetchSubmenu":
+			dispatch({
+				type: "select",
+				action,
+				breadcrumb: [...breadcrumb, opt.label],
+			});
 			break;
-		}
 		case "chooser": {
-			// Mirrors the "submenu" case above: most spec() builders resolve
-			// synchronously, but process-explorer.ts's needs an async `ps`
-			// shell-out first.
+			// Most spec() builders resolve synchronously, but
+			// process-explorer.ts's needs an async `ps` shell-out first.
 			const resolved = action.spec();
 			if (resolved instanceof Promise) {
 				void resolved.then((spec) => dispatch({ type: "openChooser", spec }));
@@ -604,26 +760,41 @@ function revealMenu(): void {
 	// The reveal timer only ever fires while a "menu" scene is still on top
 	// (mountChooserScene() cancels it the instant a chooser mounts), so this
 	// is always safe -- defensive check only.
-	const top = model[model.length - 1];
+	const top = model.stack[model.stack.length - 1];
 	if (!top || top.kind !== "menu") return;
-	renderMenu(top.options, top.breadcrumb, { entering: true });
+	renderMenu(top, { entering: true });
 }
 
 interface RenderOpts {
 	entering?: boolean;
 }
 
-function renderMenu(
-	options: MenuItem[],
-	breadcrumb: string[],
-	opts: RenderOpts = {},
-): void {
+// The one non-selectable row a menu scene shows instead of items: while
+// its PrefetchSubmenu is loading, after it failed, or when it loaded
+// nothing at all.
+function statusText(content: Remote): string | null {
+	switch (content.status) {
+		case "loading":
+			return "Loading…";
+		case "failed":
+			return `⚠ ${content.error}`;
+		case "ready":
+			return content.items.length === 0 ? "Nothing here" : null;
+	}
+}
+
+function renderMenu(scene: MenuScene, opts: RenderOpts = {}): void {
 	canvas?.destroy();
+
+	const { breadcrumb } = scene;
+	const options = sceneItems(scene);
+	const status = statusText(scene.content);
+	const rowCount = options.length + (status ? 1 : 0);
 
 	const { paddingX, paddingY, fontSize, breadcrumbFontSize, gap } = Theme;
 	const breadcrumbSpace = gap + breadcrumbFontSize;
 	const w = 320;
-	let h = paddingY * 2 + options.length * (fontSize + gap) - gap;
+	let h = paddingY * 2 + rowCount * (fontSize + gap) - gap;
 	if (breadcrumb.length > 0) h += breadcrumbSpace;
 
 	const restTopLeft = menuRestTopLeft(w, h);
@@ -725,7 +896,9 @@ function renderMenu(
 
 		// Label + submenu arrow: two adjacent text elements (no hs.styledtext
 		// in v2 to mix styles within one string -- see file header).
-		const arrowW = opt.action.kind === "submenu" ? 24 : 0;
+		const hasSubmenu =
+			opt.action.kind === "submenu" || opt.action.kind === "prefetchSubmenu";
+		const arrowW = hasSubmenu ? 24 : 0;
 		c.appendElements([
 			Canvas.text(opt.label, {
 				textColor: canvasColor(Theme.text),
@@ -740,7 +913,7 @@ function renderMenu(
 				trackMouseDown: true,
 			}),
 		]);
-		if (opt.action.kind === "submenu") {
+		if (hasSubmenu) {
 			c.appendElements([
 				Canvas.text("→", {
 					textColor: canvasColor(Theme.textDim),
@@ -752,6 +925,23 @@ function renderMenu(
 			]);
 		}
 	});
+
+	// No id/trackMouseDown: there's nothing to select, and a click on it
+	// shouldn't count as a click outside either (see withinCanvas()).
+	if (status) {
+		c.appendElements([
+			Canvas.text(status, {
+				textColor: canvasColor(Theme.textDim),
+				textSize: fontSize,
+				frame: {
+					x: paddingX,
+					y: yOffset + options.length * (fontSize + gap),
+					w: w - paddingX * 2,
+					h: rowTextH,
+				},
+			}),
+		]);
+	}
 
 	c.levelValue(OVERLAY_LEVEL);
 	c.clickActivating(false);
@@ -877,11 +1067,14 @@ export interface ShowOptions {
 	revealImmediately?: boolean;
 }
 
-export function show(menuTree: MenuItem[], opts: ShowOptions = {}): void {
+// The root is itself a submenu action: Submenu(tree) for a static menu, or
+// a PrefetchSubmenu to open straight into its loading state (e.g. init.ts's
+// Hyper+G showing zellij-menu.ts's node directly).
+export function show(root: AnySubmenuAction, opts: ShowOptions = {}): void {
 	showStartMs = nowMs();
 	dispatch({ type: "close" }); // defensive: never stack a new menu/timers on a stale one
 	showPlaceholderInitial();
-	dispatch({ type: "openSubmenu", options: menuTree, breadcrumb: [] }); // eventtap is live immediately; the real menu isn't drawn yet
+	dispatch({ type: "open", root }); // eventtap is live immediately; the real menu isn't drawn yet
 	if (opts.revealImmediately) revealMenu();
 	else armRevealTimer();
 }

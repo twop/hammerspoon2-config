@@ -4,6 +4,7 @@
 
 import * as Term from "./termview";
 import * as LeaderMenu from "./leader-menu";
+import { Submenu } from "./leader-menu";
 import { menuTree } from "./leader-menu-config";
 import * as ZellijMenu from "./zellij-menu";
 
@@ -28,18 +29,21 @@ const hotkeys = [
 		null,
 	),
 
-	hs.hotkey.bind(hyper, "space", () => LeaderMenu.show(menuTree), null),
+	hs.hotkey.bind(
+		hyper,
+		"space",
+		() => LeaderMenu.show(Submenu(menuTree)),
+		null,
+	),
 	// ZELLIJ MENU (Hyper+G) -- the leader menu's "j" submenu, opened directly.
-	// Its items need a zj_hs_jump state fetch first, so the menu shows once
-	// that resolves -- and then without the usual reveal delay, since the
-	// items' labels are meant to be read.
+	// Opens straight into its PrefetchSubmenu's loading state, filling in
+	// once the zj_hs_jump fetch resolves -- without the usual reveal delay,
+	// since the items' labels are meant to be read.
 	hs.hotkey.bind(
 		hyper,
 		"g",
 		() =>
-			void ZellijMenu.items().then((items) =>
-				LeaderMenu.show(items, { revealImmediately: true }),
-			),
+			LeaderMenu.show(ZellijMenu.menu, { revealImmediately: true }),
 		null,
 	),
 ];

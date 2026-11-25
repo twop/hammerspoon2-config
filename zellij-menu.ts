@@ -4,8 +4,8 @@
 // state` call to any live session returns every session's tabs, attached
 // clients and resurrectable sessions as JSON, and `focus`/`session` pipes do
 // the switching. v2 has no synchronous hs.execute -- every shell call here is
-// a Promise via hs.task.shell(), which is why every exported submenu builder
-// below is async.
+// a Promise via hs.task.shell(), which is why the menu below is a
+// PrefetchSubmenu over one async state fetch.
 
 import * as KeyLabels from "./key-labels";
 import { shellQuote } from "./termview";
@@ -13,6 +13,7 @@ import {
 	focusApp,
 	Callback,
 	Chooser,
+	PrefetchSubmenu,
 	Submenu,
 	type MenuItem,
 } from "./leader-menu";
@@ -193,11 +194,30 @@ function capped<T>(
 	return list.slice(0, KeyLabels.capacity(pool));
 }
 
-export async function tabsSubmenu(): Promise<MenuItem[]> {
-	const resolved = await resolveState();
-	if (!resolved) return [];
-	const { state, current } = resolved;
+// The menu's one data fetch (see node below). Unreachable is an error, not
+// an empty state, so it shows as the submenu's error row.
+async function requireState(): Promise<ZjState> {
+	const state = await fetchState();
+	if (!state) throw new Error("zj_hs_jump not reachable");
+	return state;
+}
 
+function sessionItems(state: ZjState): MenuItem[] {
+	const labels = KeyLabels.generate(
+		state.sessions.length,
+		KeyLabels.NUMBER_CHARS,
+	);
+	return state.sessions.map((session, i) => ({
+		key: labels[i]!,
+		label: session.name,
+		action: Callback(() => void switchToSession(session.name)),
+	}));
+}
+
+// Tabs of the attached session; none when no client is attached.
+function tabItems(state: ZjState): MenuItem[] {
+	const current = state.attached[0];
+	if (!current) return [];
 	const session = state.sessions.find((s) => s.name === current);
 	// Numbered by position: tab N is always key N.
 	const tabs = capped(
@@ -212,12 +232,7 @@ export async function tabsSubmenu(): Promise<MenuItem[]> {
 	}));
 }
 
-export async function reviveSubmenu(): Promise<MenuItem[]> {
-	const state = await fetchState();
-	if (!state) {
-		hs.ui.alert("Zellij: zj_hs_jump not reachable").show();
-		return [];
-	}
+function reviveItems(state: ZjState): MenuItem[] {
 	const exited = capped(state.resurrectable);
 	const labels = KeyLabels.generate(exited.length);
 	return exited.map((name, i) => ({
@@ -240,11 +255,10 @@ interface JumpChoice {
 // order: each live session's row followed by its tabs, then resurrectable
 // sessions at the bottom. The attached session's row and its active tab are
 // left out since picking them would be a no-op.
-async function jumpSpec(): Promise<ChooserSpec<JumpChoice>> {
-	const state = await fetchState();
-	const current = state?.attached[0];
+function jumpSpec(state: ZjState): ChooserSpec<JumpChoice> {
+	const current = state.attached[0];
 	const choices: JumpChoice[] = [];
-	for (const session of state?.sessions ?? []) {
+	for (const session of state.sessions) {
 		const isCurrent = session.name === current;
 		if (!isCurrent)
 			choices.push({
@@ -267,7 +281,7 @@ async function jumpSpec(): Promise<ChooserSpec<JumpChoice>> {
 			});
 		}
 	}
-	for (const name of state?.resurrectable ?? [])
+	for (const name of state.resurrectable)
 		choices.push({
 			text: name,
 			subText: "exited session · revive",
@@ -278,7 +292,7 @@ async function jumpSpec(): Promise<ChooserSpec<JumpChoice>> {
 
 	return {
 		choices,
-		placeholder: state ? "Jump to session or tab…" : "zj_hs_jump not reachable",
+		placeholder: "Jump to session or tab…",
 		searchSubText: true,
 		onSelect: (choice) => {
 			// Deferred past the chooser's own hide, same as the other modules'
@@ -292,52 +306,24 @@ async function jumpSpec(): Promise<ChooserSpec<JumpChoice>> {
 	};
 }
 
-// The Zellij menu's own items -- shown under the leader menu's "j" (node
-// below) and directly by init.ts's Hyper+G hotkey.
-export async function items(): Promise<MenuItem[]> {
-	return [
-		{
-			key: "s",
-			label: "Switch session",
-			action: Submenu(async () => {
-				const state = await fetchState();
-				if (!state) return [];
+// The Zellij menu -- shown under the leader menu's "j" and directly by
+// init.ts's Hyper+G hotkey. One state fetch, started as soon as the level
+// containing it mounts, feeds every child: they're plain static submenus
+// rendered from that snapshot. Picks still re-resolve the attached session
+// at action time (see sendToAttached), so they act on live state.
+export const menu = PrefetchSubmenu(requireState, (state) => [
+	{
+		key: "s",
+		label: "Switch session",
+		action: Submenu(sessionItems(state)),
+	},
+	{
+		key: "f",
+		label: "Find session/tab",
+		action: Chooser(() => jumpSpec(state)),
+	},
+	{ key: "t", label: "Switch tab", action: Submenu(tabItems(state)) },
+	{ key: "r", label: "Revive session", action: Submenu(reviveItems(state)) },
+]);
 
-				const labels = KeyLabels.generate(
-					state.sessions.length,
-					KeyLabels.NUMBER_CHARS,
-				);
-
-				return state.sessions.map(
-					(session, i) =>
-						({
-							key: labels[i]!,
-							label: session.name,
-							action: Callback(() => switchToSession(session.name)),
-						}) satisfies MenuItem,
-				);
-			}),
-		},
-		{
-			key: "f",
-			label: "Find session/tab",
-			action: Chooser(jumpSpec),
-		},
-		{
-			key: "t",
-			label: "Switch tab",
-			action: Submenu(tabsSubmenu),
-		},
-		{
-			key: "r",
-			label: "Revive session",
-			action: Submenu(reviveSubmenu),
-		},
-	];
-}
-
-export const node: MenuItem = {
-	key: "j",
-	label: "Zellij",
-	action: Submenu(items),
-};
+export const node: MenuItem = { key: "j", label: "Zellij", action: menu };

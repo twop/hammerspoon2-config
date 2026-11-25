@@ -447,6 +447,10 @@ var LEFT_MOUSE_DOWN = hs.eventtap.eventTypes["leftMouseDown"];
 var RIGHT_MOUSE_DOWN = hs.eventtap.eventTypes["rightMouseDown"];
 var OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"];
 var Submenu = (submenu) => ({ kind: "submenu", submenu });
+var PrefetchSubmenu = (load, render2) => ({
+  kind: "prefetchSubmenu",
+  load: async () => render2(await load())
+});
 var Chooser = (spec8) => ({
   kind: "chooser",
   spec: () => {
@@ -505,7 +509,7 @@ var canvas2 = null;
 var placeholderCanvas = null;
 var tap = null;
 var mouseTap = null;
-var model = [];
+var model = { session: 0, stack: [], loads: /* @__PURE__ */ new Map() };
 var mounted = null;
 var revealed = false;
 var revealTimer = null;
@@ -540,24 +544,102 @@ function stopFocusWatcher() {
   hs.application.off("didActivate", onDidActivate);
   watchAppElement(null);
 }
-function update(stack, msg) {
+var LOADING = { status: "loading" };
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+function loadEffect(session, action) {
+  return (dispatch2) => {
+    action.load().then(
+      (items) => dispatch2({
+        type: "loadSettled",
+        session,
+        action,
+        result: { status: "ready", items }
+      }),
+      (err) => dispatch2({
+        type: "loadSettled",
+        session,
+        action,
+        result: { status: "failed", error: errorMessage(err) }
+      })
+    );
+  };
+}
+function startPrefetches(session, loads, content) {
+  if (content.status !== "ready") return [];
+  const effects = [];
+  for (const { action } of content.items) {
+    if (action.kind !== "prefetchSubmenu" || loads.has(action)) continue;
+    loads.set(action, LOADING);
+    effects.push(loadEffect(session, action));
+  }
+  return effects;
+}
+function pushMenu(model2, action, breadcrumb) {
+  const loads = new Map(model2.loads);
+  const effects = [];
+  let content;
+  if (action.kind === "submenu") {
+    content = { status: "ready", items: action.submenu };
+  } else {
+    const cached = loads.get(action);
+    if (cached) {
+      content = cached;
+    } else {
+      content = LOADING;
+      loads.set(action, LOADING);
+      effects.push(loadEffect(model2.session, action));
+    }
+  }
+  effects.push(...startPrefetches(model2.session, loads, content));
+  const scene = {
+    kind: "menu",
+    source: action.kind === "prefetchSubmenu" ? action : null,
+    content,
+    breadcrumb
+  };
+  return [{ ...model2, stack: [...model2.stack, scene], loads }, effects];
+}
+function closed(model2) {
+  return { ...model2, stack: [], loads: /* @__PURE__ */ new Map() };
+}
+function update(model2, msg) {
   switch (msg.type) {
-    case "openSubmenu":
-      return [
-        [
-          ...stack,
-          { kind: "menu", options: msg.options, breadcrumb: msg.breadcrumb }
-        ],
-        null
-      ];
+    case "open":
+      return pushMenu(
+        { session: model2.session + 1, stack: [], loads: /* @__PURE__ */ new Map() },
+        msg.root,
+        []
+      );
+    case "select":
+      return pushMenu(model2, msg.action, msg.breadcrumb);
+    case "loadSettled": {
+      if (msg.session !== model2.session || !model2.loads.has(msg.action)) {
+        return [model2, []];
+      }
+      const loads = new Map(model2.loads);
+      loads.set(msg.action, msg.result);
+      let onStack = false;
+      const stack = model2.stack.map((scene) => {
+        if (scene.kind !== "menu" || scene.source !== msg.action) return scene;
+        onStack = true;
+        return { ...scene, content: msg.result };
+      });
+      const effects = onStack ? startPrefetches(model2.session, loads, msg.result) : [];
+      return [{ ...model2, stack, loads }, effects];
+    }
     case "openChooser":
-      return [[...stack, { kind: "chooser", spec: msg.spec }], null];
+      return [
+        { ...model2, stack: [...model2.stack, { kind: "chooser", spec: msg.spec }] },
+        []
+      ];
     case "back":
-      return [stack.length > 1 ? stack.slice(0, -1) : [], null];
+      return model2.stack.length > 1 ? [{ ...model2, stack: model2.stack.slice(0, -1) }, []] : [closed(model2), []];
     case "close":
-      return [[], null];
+      return [closed(model2), []];
     case "runEffect":
-      return [[], msg.run];
+      return [closed(model2), [() => msg.run()]];
   }
 }
 function stopRevealTimerAndPlaceholder() {
@@ -571,26 +653,29 @@ function stopRevealTimerAndPlaceholder() {
   placeholderCanvas = null;
 }
 function dispatch(msg) {
-  const [next, cmd] = update(model, msg);
-  const prevTop = model[model.length - 1];
-  const nextTop = next[next.length - 1];
+  const [next, effects] = update(model, msg);
+  const prevTop = model.stack[model.stack.length - 1];
+  const nextTop = next.stack[next.stack.length - 1];
   if (nextTop !== prevTop) {
     mounted?.hide();
-    mounted = nextTop ? mountScene(nextTop, next.length > 1) : null;
+    mounted = nextTop ? mountScene(nextTop, next.stack.length > 1) : null;
   }
-  if (next.length === 0) {
+  if (next.stack.length === 0) {
     stopRevealTimerAndPlaceholder();
     revealed = false;
   }
   model = next;
-  if (cmd) hs.timer.doAfter(0, cmd);
+  for (const effect of effects) hs.timer.doAfter(0, () => effect(dispatch));
 }
 function mountScene(scene, canGoBack) {
-  return scene.kind === "menu" ? mountMenu(scene.options, scene.breadcrumb) : mountChooserScene(scene.spec, canGoBack);
+  return scene.kind === "menu" ? mountMenu(scene) : mountChooserScene(scene.spec, canGoBack);
 }
-function mountMenu(options, breadcrumb) {
-  if (revealed) renderMenu(options, breadcrumb);
-  bindKeys(options, breadcrumb);
+function sceneItems(scene) {
+  return scene.content.status === "ready" ? scene.content.items : [];
+}
+function mountMenu(scene) {
+  if (revealed) renderMenu(scene);
+  bindKeys(sceneItems(scene), scene.breadcrumb);
   startFocusWatcher();
   startMouseWatcher();
   return {
@@ -647,22 +732,14 @@ function runShellCommand(path, args) {
 function selectOption(opt, breadcrumb) {
   const action = opt.action;
   switch (action.kind) {
-    case "submenu": {
-      const newBreadcrumb = [...breadcrumb, opt.label];
-      const resolved = typeof action.submenu === "function" ? action.submenu() : action.submenu;
-      if (resolved instanceof Promise) {
-        void resolved.then(
-          (options) => dispatch({ type: "openSubmenu", options, breadcrumb: newBreadcrumb })
-        );
-      } else {
-        dispatch({
-          type: "openSubmenu",
-          options: resolved,
-          breadcrumb: newBreadcrumb
-        });
-      }
+    case "submenu":
+    case "prefetchSubmenu":
+      dispatch({
+        type: "select",
+        action,
+        breadcrumb: [...breadcrumb, opt.label]
+      });
       break;
-    }
     case "chooser": {
       const resolved = action.spec();
       if (resolved instanceof Promise) {
@@ -774,16 +851,30 @@ function revealMenu() {
       duration: SPLIT_TRANSITION_DURATION
     });
   }
-  const top = model[model.length - 1];
+  const top = model.stack[model.stack.length - 1];
   if (!top || top.kind !== "menu") return;
-  renderMenu(top.options, top.breadcrumb, { entering: true });
+  renderMenu(top, { entering: true });
 }
-function renderMenu(options, breadcrumb, opts = {}) {
+function statusText(content) {
+  switch (content.status) {
+    case "loading":
+      return "Loading\u2026";
+    case "failed":
+      return `\u26A0 ${content.error}`;
+    case "ready":
+      return content.items.length === 0 ? "Nothing here" : null;
+  }
+}
+function renderMenu(scene, opts = {}) {
   canvas2?.destroy();
+  const { breadcrumb } = scene;
+  const options = sceneItems(scene);
+  const status = statusText(scene.content);
+  const rowCount = options.length + (status ? 1 : 0);
   const { paddingX, paddingY, fontSize, breadcrumbFontSize, gap } = Theme;
   const breadcrumbSpace = gap + breadcrumbFontSize;
   const w = 320;
-  let h = paddingY * 2 + options.length * (fontSize + gap) - gap;
+  let h = paddingY * 2 + rowCount * (fontSize + gap) - gap;
   if (breadcrumb.length > 0) h += breadcrumbSpace;
   const restTopLeft = menuRestTopLeft(w, h);
   const { x, y } = restTopLeft;
@@ -871,7 +962,8 @@ function renderMenu(options, breadcrumb, opts = {}) {
         trackMouseDown: true
       })
     ]);
-    const arrowW = opt.action.kind === "submenu" ? 24 : 0;
+    const hasSubmenu = opt.action.kind === "submenu" || opt.action.kind === "prefetchSubmenu";
+    const arrowW = hasSubmenu ? 24 : 0;
     c.appendElements([
       Canvas.text(opt.label, {
         textColor: canvasColor(Theme.text),
@@ -886,7 +978,7 @@ function renderMenu(options, breadcrumb, opts = {}) {
         trackMouseDown: true
       })
     ]);
-    if (opt.action.kind === "submenu") {
+    if (hasSubmenu) {
       c.appendElements([
         Canvas.text("\u2192", {
           textColor: canvasColor(Theme.textDim),
@@ -898,6 +990,20 @@ function renderMenu(options, breadcrumb, opts = {}) {
       ]);
     }
   });
+  if (status) {
+    c.appendElements([
+      Canvas.text(status, {
+        textColor: canvasColor(Theme.textDim),
+        textSize: fontSize,
+        frame: {
+          x: paddingX,
+          y: yOffset + options.length * (fontSize + gap),
+          w: w - paddingX * 2,
+          h: rowTextH
+        }
+      })
+    ]);
+  }
   c.levelValue(OVERLAY_LEVEL);
   c.clickActivating(false);
   c.mouseCallback((_canvas, message, id) => {
@@ -976,11 +1082,11 @@ function startMouseWatcher() {
   );
   mouseTap?.start();
 }
-function show(menuTree2, opts = {}) {
+function show(root, opts = {}) {
   showStartMs = nowMs();
   dispatch({ type: "close" });
   showPlaceholderInitial();
-  dispatch({ type: "openSubmenu", options: menuTree2, breadcrumb: [] });
+  dispatch({ type: "open", root });
   if (opts.revealImmediately) revealMenu();
   else armRevealTimer();
 }
@@ -16725,8 +16831,8 @@ function spec() {
 }
 
 // menu-item-search.ts
-function flatten(items2, ancestorTitles, out) {
-  for (const item of items2 ?? []) {
+function flatten(items, ancestorTitles, out) {
+  for (const item of items ?? []) {
     const title = item.title;
     if (!title) continue;
     if (item.items && item.items.length > 0) {
@@ -17499,10 +17605,25 @@ async function reviveSession(name) {
 function capped(list, pool = SINGLE_CHARS) {
   return list.slice(0, capacity(pool));
 }
-async function tabsSubmenu() {
-  const resolved = await resolveState();
-  if (!resolved) return [];
-  const { state, current } = resolved;
+async function requireState() {
+  const state = await fetchState();
+  if (!state) throw new Error("zj_hs_jump not reachable");
+  return state;
+}
+function sessionItems(state) {
+  const labels = generate(
+    state.sessions.length,
+    NUMBER_CHARS
+  );
+  return state.sessions.map((session, i) => ({
+    key: labels[i],
+    label: session.name,
+    action: Callback(() => void switchToSession(session.name))
+  }));
+}
+function tabItems(state) {
+  const current = state.attached[0];
+  if (!current) return [];
   const session = state.sessions.find((s) => s.name === current);
   const tabs = capped(
     [...session?.tabs ?? []].sort((a, b) => a.position - b.position),
@@ -17515,12 +17636,7 @@ async function tabsSubmenu() {
     action: Callback(() => void focusTab(current, tab.position))
   }));
 }
-async function reviveSubmenu() {
-  const state = await fetchState();
-  if (!state) {
-    hs.ui.alert("Zellij: zj_hs_jump not reachable").show();
-    return [];
-  }
+function reviveItems(state) {
   const exited = capped(state.resurrectable);
   const labels = generate(exited.length);
   return exited.map((name, i) => ({
@@ -17529,11 +17645,10 @@ async function reviveSubmenu() {
     action: Callback(() => void reviveSession(name))
   }));
 }
-async function jumpSpec() {
-  const state = await fetchState();
-  const current = state?.attached[0];
+function jumpSpec(state) {
+  const current = state.attached[0];
   const choices = [];
-  for (const session of state?.sessions ?? []) {
+  for (const session of state.sessions) {
     const isCurrent = session.name === current;
     if (!isCurrent)
       choices.push({
@@ -17556,7 +17671,7 @@ async function jumpSpec() {
       });
     }
   }
-  for (const name of state?.resurrectable ?? [])
+  for (const name of state.resurrectable)
     choices.push({
       text: name,
       subText: "exited session \xB7 revive",
@@ -17566,7 +17681,7 @@ async function jumpSpec() {
     });
   return {
     choices,
-    placeholder: state ? "Jump to session or tab\u2026" : "zj_hs_jump not reachable",
+    placeholder: "Jump to session or tab\u2026",
     searchSubText: true,
     onSelect: (choice) => {
       hs.timer.doAfter(0, () => {
@@ -17577,49 +17692,21 @@ async function jumpSpec() {
     }
   };
 }
-async function items() {
-  return [
-    {
-      key: "s",
-      label: "Switch session",
-      action: Submenu(async () => {
-        const state = await fetchState();
-        if (!state) return [];
-        const labels = generate(
-          state.sessions.length,
-          NUMBER_CHARS
-        );
-        return state.sessions.map(
-          (session, i) => ({
-            key: labels[i],
-            label: session.name,
-            action: Callback(() => switchToSession(session.name))
-          })
-        );
-      })
-    },
-    {
-      key: "f",
-      label: "Find session/tab",
-      action: Chooser(jumpSpec)
-    },
-    {
-      key: "t",
-      label: "Switch tab",
-      action: Submenu(tabsSubmenu)
-    },
-    {
-      key: "r",
-      label: "Revive session",
-      action: Submenu(reviveSubmenu)
-    }
-  ];
-}
-var node = {
-  key: "j",
-  label: "Zellij",
-  action: Submenu(items)
-};
+var menu = PrefetchSubmenu(requireState, (state) => [
+  {
+    key: "s",
+    label: "Switch session",
+    action: Submenu(sessionItems(state))
+  },
+  {
+    key: "f",
+    label: "Find session/tab",
+    action: Chooser(() => jumpSpec(state))
+  },
+  { key: "t", label: "Switch tab", action: Submenu(tabItems(state)) },
+  { key: "r", label: "Revive session", action: Submenu(reviveItems(state)) }
+]);
+var node = { key: "j", label: "Zellij", action: menu };
 
 // leader-menu-config.ts
 function symbol(name) {
@@ -17995,17 +18082,20 @@ var hotkeys = [
     ),
     null
   ),
-  hs.hotkey.bind(hyper, "space", () => show(menuTree), null),
+  hs.hotkey.bind(
+    hyper,
+    "space",
+    () => show(Submenu(menuTree)),
+    null
+  ),
   // ZELLIJ MENU (Hyper+G) -- the leader menu's "j" submenu, opened directly.
-  // Its items need a zj_hs_jump state fetch first, so the menu shows once
-  // that resolves -- and then without the usual reveal delay, since the
-  // items' labels are meant to be read.
+  // Opens straight into its PrefetchSubmenu's loading state, filling in
+  // once the zj_hs_jump fetch resolves -- without the usual reveal delay,
+  // since the items' labels are meant to be read.
   hs.hotkey.bind(
     hyper,
     "g",
-    () => void items().then(
-      (items2) => show(items2, { revealImmediately: true })
-    ),
+    () => show(menu, { revealImmediately: true }),
     null
   )
 ];
