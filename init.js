@@ -17743,6 +17743,7 @@ var menu = PrefetchSubmenu(requireState, (state) => [
   }
 ]);
 var node = { key: "j", label: "Zellij", action: menu };
+var tabsMenu = PrefetchSubmenu(requireState, tabItems);
 
 // leader-menu-config.ts
 function symbol(name) {
@@ -18107,7 +18108,6 @@ var menuTree = [
 // init.ts
 var hyper = ["cmd", "alt", "ctrl", "shift"];
 var hotkeys = [
-  hs.hotkey.bind(hyper, "t", () => summon("tuxedo", "tuxedo"), null),
   hs.hotkey.bind(
     hyper,
     "y",
@@ -18132,6 +18132,15 @@ var hotkeys = [
     hyper,
     "g",
     () => show(menu, { revealImmediately: true }),
+    null
+  ),
+  // ZELLIJ TABS (Hyper+T) -- the Zellij menu's "t" (Switch tab) list,
+  // opened directly. Tuxedo, which used to live here, is now only under
+  // the leader menu's Utilities ("u" -> "x").
+  hs.hotkey.bind(
+    hyper,
+    "t",
+    () => show(tabsMenu, { revealImmediately: true }),
     null
   )
 ];

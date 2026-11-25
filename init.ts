@@ -16,7 +16,6 @@ const hyper = ["cmd", "alt", "ctrl", "shift"];
 // return values that aren't retained anywhere get garbage collected and silently
 // stop firing, with no exception.
 const hotkeys = [
-	hs.hotkey.bind(hyper, "t", () => Term.summon("tuxedo", "tuxedo"), null),
 	hs.hotkey.bind(
 		hyper,
 		"y",
@@ -44,6 +43,16 @@ const hotkeys = [
 		"g",
 		() =>
 			LeaderMenu.show(ZellijMenu.menu, { revealImmediately: true }),
+		null,
+	),
+	// ZELLIJ TABS (Hyper+T) -- the Zellij menu's "t" (Switch tab) list,
+	// opened directly. Tuxedo, which used to live here, is now only under
+	// the leader menu's Utilities ("u" -> "x").
+	hs.hotkey.bind(
+		hyper,
+		"t",
+		() =>
+			LeaderMenu.show(ZellijMenu.tabsMenu, { revealImmediately: true }),
 		null,
 	),
 ];

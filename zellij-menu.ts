@@ -364,3 +364,7 @@ export const menu = PrefetchSubmenu(requireState, (state) => [
 ]);
 
 export const node: MenuItem = { key: "j", label: "Zellij", action: menu };
+
+// Just the attached session's tabs (the "t" list above) as its own root,
+// for init.ts's Hyper+T -- same one-fetch prefetch, no menu level first.
+export const tabsMenu = PrefetchSubmenu(requireState, tabItems);
