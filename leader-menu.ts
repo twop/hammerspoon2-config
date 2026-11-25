@@ -33,7 +33,18 @@
 
 import { Theme, canvasColor } from "./nord-theme";
 import { Canvas, cornerRadii } from "./canvas";
-import { flipTopLeftY, flipFrameY } from "./screen-geometry";
+import { flipFrameY } from "./screen-geometry";
+import {
+	canvasTarget,
+	nowMs,
+	parallel,
+	run,
+	stop,
+	stopAll,
+	tween,
+	type Target,
+	type Vec,
+} from "./animation";
 import {
 	mountChooser,
 	eraseChooser,
@@ -191,88 +202,51 @@ interface MountedScene {
 // ============================================================
 
 const REVEAL_DELAY_SECONDS = 0.3;
-const PLACEHOLDER_ENTER_DURATION = 0.2;
-const SPLIT_TRANSITION_DURATION = 0.22;
 const SLIDE_OFFSET_PX = 14;
 const SPLIT_GAP_PX = 24;
 
-function nowMs(): number {
-	return hs.timer.absoluteTime() / 1e6;
-}
+const below = (p: Vec): Vec => ({ x: p.x, y: p.y + SLIDE_OFFSET_PX });
 
-function easeOutCubic(t: number): number {
-	return 1 - Math.pow(1 - t, 3);
-}
-
-interface AnimateOpts {
-	fromPoint: { x: number; y: number };
-	toPoint: { x: number; y: number };
-	duration?: number;
-	// Called every tick with the same eased progress (0-1) driving the
-	// position tween, so a caller can layer in extra per-frame work (e.g.
-	// opacity -- see setPlaceholderOpacity()) on this same timer instead of
-	// running a second one alongside it.
-	onTick?: (eased: number) => void;
-	onComplete?: () => void;
-}
-
-// Tweens a canvas's position over opts.duration seconds, computing
-// progress from wall-clock elapsed time each tick (not tick count).
-// Registered in animTimers so a full teardown can stop it if the menu is
-// torn down mid-flight. v1 also faded alpha here (canvas:alpha()) --
-// HSCanvas has no window-level alpha/opacity method in v2 (confirmed
-// absent from its full method list), so a fade has to animate each
-// element's own fillColor/strokeColor alpha instead (via opts.onTick)
-// rather than the window itself.
-function animateCanvas(canvas: HSCanvas, opts: AnimateOpts): HSTimer | null {
-	const durationMs = (opts.duration ?? 0.15) * 1000;
-	const startMs = nowMs();
-	const { fromPoint, toPoint } = opts;
-
-	const tick = (): boolean => {
-		const t = Math.min((nowMs() - startMs) / durationMs, 1);
-		const e = easeOutCubic(t);
-		canvas.setTopLeft(
-			flipTopLeftY({
-				x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
-				y: fromPoint.y + (toPoint.y - fromPoint.y) * e,
-			}),
-		);
-		opts.onTick?.(e);
-		return t >= 1;
-	};
-
-	if (tick()) {
-		opts.onComplete?.();
-		return null;
-	}
-
-	let timer: HSTimer;
-	timer = hs.timer.create(1 / 60, () => {
-		if (tick()) {
-			timer.stop();
-			animTimers.delete(timer);
-			opts.onComplete?.();
-		}
-	});
-	animTimers.add(timer);
-	timer.start();
-	return timer;
-}
+// Every motion the menu makes, as data -- run by animation.ts's engine
+// (see that file for the rules: a new run on a target replaces its old
+// one, and a tween without `from` starts from the target's current value).
+const Anim = {
+	// The dot rising and fading in at the screen's center, on every show().
+	dotEnter: (rest: Vec) =>
+		parallel(
+			tween("topLeft", rest, 0.2, { from: below(rest) }),
+			tween("opacity", 1, 0.2, { from: 0 }),
+		),
+	// The dot moving aside for the panel. No `from`: with revealImmediately
+	// this lands mid-dotEnter and just continues from there.
+	dotSplit: (left: Vec) =>
+		parallel(tween("topLeft", left, 0.22), tween("opacity", 1, 0.22)),
+	// The panel's first appearance in a session.
+	panelEnter: (rest: Vec) =>
+		tween("topLeft", rest, 0.22, { from: below(rest) }),
+	// A content swap (Loading… -> items) or a level change: glide from where
+	// the previous panel was to the new one's rest position.
+	panelMove: (rest: Vec) => tween("topLeft", rest, 0.22),
+};
 
 // ============================================================
 // MODULE STATE
 // ============================================================
 
-let canvas: HSCanvas | null = null;
-let placeholderCanvas: HSCanvas | null = null;
+// A canvas plus the animation target driving it.
+interface Animated {
+	canvas: HSCanvas;
+	target: Target;
+}
+
+let panel: Animated | null = null; // the menu level's own canvas
+let dot: Animated | null = null; // the placeholder dot
 let tap: HSEventTap | null = null;
 let mouseTap: HSEventTap | null = null;
 let model: Model = { session: 0, stack: [], loads: new Map() };
 let mounted: MountedScene | null = null;
 let revealed = false;
 let revealTimer: HSTimer | null = null;
-const animTimers = new Set<HSTimer>();
 let showStartMs = 0;
 
 // Focus-steal watcher state (see startFocusWatcher()). Canvas-menu-only --
@@ -496,10 +470,23 @@ function stopRevealTimerAndPlaceholder(): void {
 		revealTimer.stop();
 		revealTimer = null;
 	}
-	for (const timer of animTimers) timer.stop();
-	animTimers.clear();
-	placeholderCanvas?.destroy();
-	placeholderCanvas = null;
+	destroyDot();
+}
+
+function destroyAnimated(a: Animated | null): void {
+	if (!a) return;
+	stop(a.target);
+	a.canvas.destroy();
+}
+
+function destroyDot(): void {
+	destroyAnimated(dot);
+	dot = null;
+}
+
+function destroyPanel(): void {
+	destroyAnimated(panel);
+	panel = null;
 }
 
 function dispatch(msg: Msg): void {
@@ -508,10 +495,14 @@ function dispatch(msg: Msg): void {
 	const nextTop = next.stack[next.stack.length - 1];
 	if (nextTop !== prevTop) {
 		mounted?.hide();
+		// A menu level's hide() leaves its canvas up so the next level can
+		// glide from it (see renderMenu()); anything else replaces it.
+		if (nextTop?.kind !== "menu") destroyPanel();
 		mounted = nextTop ? mountScene(nextTop, next.stack.length > 1) : null;
 	}
 	if (next.stack.length === 0) {
 		stopRevealTimerAndPlaceholder();
+		stopAll();
 		revealed = false;
 	}
 	model = next;
@@ -551,8 +542,6 @@ function mountMenu(scene: MenuScene): MountedScene {
 			mouseTap?.stop();
 			mouseTap = null;
 			stopFocusWatcher();
-			canvas?.destroy();
-			canvas = null;
 		},
 	};
 }
@@ -734,17 +723,15 @@ function setPlaceholderOpacity(c: HSCanvas, factor: number): void {
 
 function showPlaceholderInitial(): void {
 	const rest = placeholderRestTopLeft("screen");
-	const start = { x: rest.x, y: rest.y + SLIDE_OFFSET_PX };
-	const c = buildPlaceholderCanvas(start);
-	setPlaceholderOpacity(c, 0);
+	const c = buildPlaceholderCanvas(below(rest));
+	const target = canvasTarget(
+		c,
+		{ topLeft: below(rest), opacity: 0 },
+		{ opacity: setPlaceholderOpacity },
+	);
 	c.show();
-	placeholderCanvas = c;
-	animateCanvas(c, {
-		fromPoint: start,
-		toPoint: rest,
-		duration: PLACEHOLDER_ENTER_DURATION,
-		onTick: (e) => setPlaceholderOpacity(c, e),
-	});
+	dot = { canvas: c, target };
+	run(target, Anim.dotEnter(rest));
 }
 
 function revealMenu(): void {
@@ -752,16 +739,7 @@ function revealMenu(): void {
 	revealed = true;
 	cancelRevealTimer();
 
-	if (placeholderCanvas) {
-		const leftRest = placeholderRestTopLeft("left");
-		animateCanvas(placeholderCanvas, {
-			fromPoint: flipTopLeftY(
-				placeholderCanvas.topLeft() as { x: number; y: number },
-			),
-			toPoint: leftRest,
-			duration: SPLIT_TRANSITION_DURATION,
-		});
-	}
+	if (dot) run(dot.target, Anim.dotSplit(placeholderRestTopLeft("left")));
 
 	// The reveal timer only ever fires while a "menu" scene is still on top
 	// (mountChooserScene() cancels it the instant a chooser mounts), so this
@@ -790,8 +768,6 @@ function statusText(content: Remote): string | null {
 }
 
 function renderMenu(scene: MenuScene, opts: RenderOpts = {}): void {
-	canvas?.destroy();
-
 	const { breadcrumb } = scene;
 	const options = sceneItems(scene);
 	const status = statusText(scene.content);
@@ -957,20 +933,23 @@ function renderMenu(scene: MenuScene, opts: RenderOpts = {}): void {
 		if (opt) selectOption(opt, breadcrumb);
 	});
 
-	if (opts.entering) {
-		const restPos = { x, y };
-		const startPos = { x, y: y + SLIDE_OFFSET_PX };
-		c.setTopLeft(flipTopLeftY(startPos));
-		c.show();
-		animateCanvas(c, {
-			fromPoint: startPos,
-			toPoint: restPos,
-			duration: SPLIT_TRANSITION_DURATION,
-		});
-	} else {
-		c.show();
-	}
-	canvas = c;
+	// A previous panel still up means this is a content swap or level
+	// change: take over its current position and glide to the new rest,
+	// instead of popping in there. New canvas shown before the old one is
+	// destroyed, so there's no blank frame in between.
+	const rest = { x, y };
+	const previous = panel;
+	const start = previous
+		? previous.target.current.topLeft
+		: opts.entering
+			? below(rest)
+			: rest;
+	const target = canvasTarget(c, { topLeft: start, opacity: 1 });
+	c.show();
+	destroyAnimated(previous);
+	panel = { canvas: c, target };
+	if (previous) run(target, Anim.panelMove(rest));
+	else if (opts.entering) run(target, Anim.panelEnter(rest));
 }
 
 // ============================================================
@@ -1032,7 +1011,8 @@ function bindKeys(options: MenuItem[], breadcrumb: string[]): void {
 }
 
 function withinCanvas(point: { x: number; y: number }): boolean {
-	if (!canvas) return false;
+	if (!panel) return false;
+	const { canvas } = panel;
 	// canvas.frame() comes back in AppKit coordinates; point (a mouse event
 	// location) is in Hammerspoon coordinates -- flipFrameY() is self-inverse,
 	// so it converts the frame back rather than the Hammerspoon rect forward.

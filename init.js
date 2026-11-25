@@ -209,6 +209,99 @@ function flipFrameY(rect) {
   };
 }
 
+// animation.ts
+var easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+function tween(prop, to, duration, opts = {}) {
+  return {
+    kind: "tween",
+    prop,
+    to,
+    from: opts.from,
+    duration,
+    ease: opts.ease ?? easeOutCubic
+  };
+}
+function parallel(...anims) {
+  return { kind: "parallel", anims };
+}
+function canvasTarget(canvas2, initial, opts = {}) {
+  let current = initial;
+  const apply = (prop, value) => {
+    if (prop === "topLeft") canvas2.setTopLeft(flipTopLeftY(value));
+    else opts.opacity?.(canvas2, value);
+  };
+  apply("topLeft", initial.topLeft);
+  apply("opacity", initial.opacity);
+  return {
+    get current() {
+      return current;
+    },
+    set(prop, value) {
+      current = { ...current, [prop]: value };
+      apply(prop, value);
+    }
+  };
+}
+function nowMs() {
+  return hs.timer.absoluteTime() / 1e6;
+}
+var runs = /* @__PURE__ */ new Map();
+var ticker = null;
+function flatten(anim) {
+  return anim.kind === "parallel" ? anim.anims.flatMap(flatten) : [anim];
+}
+function lerp(prop, a, b, e) {
+  if (prop === "topLeft") {
+    const [p2, q2] = [a, b];
+    return { x: p2.x + (q2.x - p2.x) * e, y: p2.y + (q2.y - p2.y) * e };
+  }
+  const [p, q] = [a, b];
+  return p + (q - p) * e;
+}
+function step(target, r, now) {
+  let done = true;
+  for (const t of r.tweens) {
+    const elapsed = (now - r.startMs) / (t.duration * 1e3);
+    const progress = t.duration > 0 ? Math.min(elapsed, 1) : 1;
+    if (progress < 1) done = false;
+    target.set(t.prop, lerp(t.prop, t.start, t.to, t.ease(progress)));
+  }
+  return done;
+}
+function tick() {
+  const now = nowMs();
+  for (const [target, r] of runs) {
+    if (step(target, r, now)) runs.delete(target);
+  }
+  if (runs.size === 0) {
+    ticker?.stop();
+    ticker = null;
+  }
+}
+function run(target, anim) {
+  const tweens = flatten(anim).map(
+    (t) => ({ ...t, start: t.from ?? target.current[t.prop] })
+  );
+  const r = { tweens, startMs: nowMs() };
+  if (step(target, r, r.startMs)) {
+    runs.delete(target);
+    return;
+  }
+  runs.set(target, r);
+  if (!ticker) {
+    ticker = hs.timer.create(1 / 60, tick);
+    ticker.start();
+  }
+}
+function stop(target) {
+  runs.delete(target);
+}
+function stopAll() {
+  runs.clear();
+  ticker?.stop();
+  ticker = null;
+}
+
 // chooser-options-bar.ts
 var KEY_DOWN = hs.eventtap.eventTypes["keyDown"];
 var POLL_INTERVAL_SECONDS = 0.1;
@@ -365,7 +458,7 @@ function attachOptionsBar(chooser, getOptionsForRow) {
     if (!bar) bar = buildBarCanvas();
     render(bar, currentOptions);
   }
-  function tick() {
+  function tick2() {
     const row = chooser.selectedRowContents(null);
     if (row === lastRow) return;
     lastRow = row;
@@ -388,8 +481,8 @@ function attachOptionsBar(chooser, getOptionsForRow) {
   }
   chooser.onShow = () => {
     lastRow = null;
-    tick();
-    pollTimer = hs.timer.create(POLL_INTERVAL_SECONDS, tick);
+    tick2();
+    pollTimer = hs.timer.create(POLL_INTERVAL_SECONDS, tick2);
     pollTimer.start();
     tap2 = hs.eventtap.addWatcher([KEY_DOWN], onKeyDown, false);
     tap2?.start();
@@ -492,59 +585,34 @@ var Chooser = (spec8) => ({
 var App = (bundleID) => ({ kind: "app", bundleID });
 var Cmd = (path, ...args) => ({ kind: "cmd", path, args });
 var Url = (url) => ({ kind: "url", url });
-var Callback = (run) => ({ kind: "callback", run });
+var Callback = (run2) => ({ kind: "callback", run: run2 });
 var REVEAL_DELAY_SECONDS = 0.3;
-var PLACEHOLDER_ENTER_DURATION = 0.2;
-var SPLIT_TRANSITION_DURATION = 0.22;
 var SLIDE_OFFSET_PX = 14;
 var SPLIT_GAP_PX = 24;
-function nowMs() {
-  return hs.timer.absoluteTime() / 1e6;
-}
-function easeOutCubic(t) {
-  return 1 - Math.pow(1 - t, 3);
-}
-function animateCanvas(canvas3, opts) {
-  const durationMs = (opts.duration ?? 0.15) * 1e3;
-  const startMs = nowMs();
-  const { fromPoint, toPoint } = opts;
-  const tick = () => {
-    const t = Math.min((nowMs() - startMs) / durationMs, 1);
-    const e = easeOutCubic(t);
-    canvas3.setTopLeft(
-      flipTopLeftY({
-        x: fromPoint.x + (toPoint.x - fromPoint.x) * e,
-        y: fromPoint.y + (toPoint.y - fromPoint.y) * e
-      })
-    );
-    opts.onTick?.(e);
-    return t >= 1;
-  };
-  if (tick()) {
-    opts.onComplete?.();
-    return null;
-  }
-  let timer;
-  timer = hs.timer.create(1 / 60, () => {
-    if (tick()) {
-      timer.stop();
-      animTimers.delete(timer);
-      opts.onComplete?.();
-    }
-  });
-  animTimers.add(timer);
-  timer.start();
-  return timer;
-}
-var canvas2 = null;
-var placeholderCanvas = null;
+var below = (p) => ({ x: p.x, y: p.y + SLIDE_OFFSET_PX });
+var Anim = {
+  // The dot rising and fading in at the screen's center, on every show().
+  dotEnter: (rest) => parallel(
+    tween("topLeft", rest, 0.2, { from: below(rest) }),
+    tween("opacity", 1, 0.2, { from: 0 })
+  ),
+  // The dot moving aside for the panel. No `from`: with revealImmediately
+  // this lands mid-dotEnter and just continues from there.
+  dotSplit: (left) => parallel(tween("topLeft", left, 0.22), tween("opacity", 1, 0.22)),
+  // The panel's first appearance in a session.
+  panelEnter: (rest) => tween("topLeft", rest, 0.22, { from: below(rest) }),
+  // A content swap (Loading… -> items) or a level change: glide from where
+  // the previous panel was to the new one's rest position.
+  panelMove: (rest) => tween("topLeft", rest, 0.22)
+};
+var panel = null;
+var dot = null;
 var tap = null;
 var mouseTap = null;
 var model = { session: 0, stack: [], loads: /* @__PURE__ */ new Map() };
 var mounted = null;
 var revealed = false;
 var revealTimer = null;
-var animTimers = /* @__PURE__ */ new Set();
 var showStartMs = 0;
 var watchedAppElement = null;
 var onFocusedWindowChanged = (_notification, _element) => dispatch({ type: "close" });
@@ -681,10 +749,20 @@ function stopRevealTimerAndPlaceholder() {
     revealTimer.stop();
     revealTimer = null;
   }
-  for (const timer of animTimers) timer.stop();
-  animTimers.clear();
-  placeholderCanvas?.destroy();
-  placeholderCanvas = null;
+  destroyDot();
+}
+function destroyAnimated(a) {
+  if (!a) return;
+  stop(a.target);
+  a.canvas.destroy();
+}
+function destroyDot() {
+  destroyAnimated(dot);
+  dot = null;
+}
+function destroyPanel() {
+  destroyAnimated(panel);
+  panel = null;
 }
 function dispatch(msg) {
   const [next, effects] = update(model, msg);
@@ -692,10 +770,12 @@ function dispatch(msg) {
   const nextTop = next.stack[next.stack.length - 1];
   if (nextTop !== prevTop) {
     mounted?.hide();
+    if (nextTop?.kind !== "menu") destroyPanel();
     mounted = nextTop ? mountScene(nextTop, next.stack.length > 1) : null;
   }
   if (next.stack.length === 0) {
     stopRevealTimerAndPlaceholder();
+    stopAll();
     revealed = false;
   }
   model = next;
@@ -719,8 +799,6 @@ function mountMenu(scene) {
       mouseTap?.stop();
       mouseTap = null;
       stopFocusWatcher();
-      canvas2?.destroy();
-      canvas2 = null;
     }
   };
 }
@@ -859,32 +937,21 @@ function setPlaceholderOpacity(c, factor) {
 }
 function showPlaceholderInitial() {
   const rest = placeholderRestTopLeft("screen");
-  const start = { x: rest.x, y: rest.y + SLIDE_OFFSET_PX };
-  const c = buildPlaceholderCanvas(start);
-  setPlaceholderOpacity(c, 0);
+  const c = buildPlaceholderCanvas(below(rest));
+  const target = canvasTarget(
+    c,
+    { topLeft: below(rest), opacity: 0 },
+    { opacity: setPlaceholderOpacity }
+  );
   c.show();
-  placeholderCanvas = c;
-  animateCanvas(c, {
-    fromPoint: start,
-    toPoint: rest,
-    duration: PLACEHOLDER_ENTER_DURATION,
-    onTick: (e) => setPlaceholderOpacity(c, e)
-  });
+  dot = { canvas: c, target };
+  run(target, Anim.dotEnter(rest));
 }
 function revealMenu() {
   if (revealed) return;
   revealed = true;
   cancelRevealTimer();
-  if (placeholderCanvas) {
-    const leftRest = placeholderRestTopLeft("left");
-    animateCanvas(placeholderCanvas, {
-      fromPoint: flipTopLeftY(
-        placeholderCanvas.topLeft()
-      ),
-      toPoint: leftRest,
-      duration: SPLIT_TRANSITION_DURATION
-    });
-  }
+  if (dot) run(dot.target, Anim.dotSplit(placeholderRestTopLeft("left")));
   const top = model.stack[model.stack.length - 1];
   if (!top || top.kind !== "menu") return;
   renderMenu(top, { entering: true });
@@ -900,7 +967,6 @@ function statusText(content) {
   }
 }
 function renderMenu(scene, opts = {}) {
-  canvas2?.destroy();
   const { breadcrumb } = scene;
   const options = sceneItems(scene);
   const status = statusText(scene.content);
@@ -1045,20 +1111,15 @@ function renderMenu(scene, opts = {}) {
     const opt = options[id - 1];
     if (opt) selectOption(opt, breadcrumb);
   });
-  if (opts.entering) {
-    const restPos = { x, y };
-    const startPos = { x, y: y + SLIDE_OFFSET_PX };
-    c.setTopLeft(flipTopLeftY(startPos));
-    c.show();
-    animateCanvas(c, {
-      fromPoint: startPos,
-      toPoint: restPos,
-      duration: SPLIT_TRANSITION_DURATION
-    });
-  } else {
-    c.show();
-  }
-  canvas2 = c;
+  const rest = { x, y };
+  const previous = panel;
+  const start = previous ? previous.target.current.topLeft : opts.entering ? below(rest) : rest;
+  const target = canvasTarget(c, { topLeft: start, opacity: 1 });
+  c.show();
+  destroyAnimated(previous);
+  panel = { canvas: c, target };
+  if (previous) run(target, Anim.panelMove(rest));
+  else if (opts.entering) run(target, Anim.panelEnter(rest));
 }
 function bindKeys(options, breadcrumb) {
   tap?.stop();
@@ -1097,7 +1158,8 @@ function bindKeys(options, breadcrumb) {
   tap.start();
 }
 function withinCanvas(point) {
-  if (!canvas2) return false;
+  if (!panel) return false;
+  const { canvas: canvas2 } = panel;
   const f = flipFrameY(
     canvas2.frame()
   );
@@ -16865,12 +16927,12 @@ function spec() {
 }
 
 // menu-item-search.ts
-function flatten(items, ancestorTitles, out) {
+function flatten2(items, ancestorTitles, out) {
   for (const item of items ?? []) {
     const title = item.title;
     if (!title) continue;
     if (item.items && item.items.length > 0) {
-      flatten(item.items, [...ancestorTitles, title], out);
+      flatten2(item.items, [...ancestorTitles, title], out);
     } else if (item.enabled !== false) {
       out.push({
         text: title,
@@ -16893,7 +16955,7 @@ function spec2() {
   hs.ui.alert("Loading menu items\u2026").duration(1).show();
   const menuItems = app.getMenuItems();
   const choices = [];
-  if (menuItems) flatten(menuItems.slice(1), [], choices);
+  if (menuItems) flatten2(menuItems.slice(1), [], choices);
   if (choices.length === 0) return informationalSpec("No menu items found");
   return eraseChooser({
     choices,
