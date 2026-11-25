@@ -8,7 +8,9 @@
 // PrefetchSubmenu over one async state fetch.
 
 import * as KeyLabels from "./key-labels";
-import { shellQuote } from "./termview";
+// Every zellij call goes through a login shell, since zellij lives in
+// ~/.cargo/bin -- see shell.ts.
+import { loginShell, shellQuote } from "./shell";
 import {
 	focusApp,
 	Callback,
@@ -19,22 +21,6 @@ import {
 } from "./leader-menu";
 import type { ChooserSpec } from "./chooser-runtime";
 import { menuTree } from "./leader-menu-config";
-
-// hs.task.shell runs commands through a bare, non-login /bin/sh -- PATH is
-// just the launchd default (/usr/bin:/bin:/usr/sbin:/sbin), so a plain
-// "zellij" (living in ~/.cargo/bin) is unresolvable; worse, hs.task doesn't
-// fail fast on a missing command the way a real shell would -- the
-// returned promise never settles at all. termview.ts's runLoginShell() hit
-// the same PATH gap and works around it by running through a login +
-// interactive invocation of the user's own shell, which sources
-// .zprofile/.zshrc first -- same fix applied here.
-const SHELL = hs.appinfo.environment.SHELL ?? "/bin/zsh";
-
-function loginShell(
-	cmd: string,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	return hs.task.shell(`${SHELL} -l -i -c ${shellQuote(cmd)}`, {});
-}
 
 interface ZjTab {
 	position: number;
@@ -121,26 +107,6 @@ async function fetchState(): Promise<ZjState | null> {
 	return null;
 }
 
-// Fetches state and resolves the attached session (the plugin's
-// attached[0]), alerting when either is unavailable -- only for deliberate
-// picks (see switchSessionItem for why).
-async function resolveState(): Promise<{
-	state: ZjState;
-	current: string;
-} | null> {
-	const state = await fetchState();
-	if (!state) {
-		hs.ui.alert("Zellij: zj_hs_jump not reachable").show();
-		return null;
-	}
-	const current = state.attached[0];
-	if (!current) {
-		hs.ui.alert("Zellij: no session currently attached").show();
-		return null;
-	}
-	return { state, current };
-}
-
 // Bundle ID, not a path -- v2's launchOrFocus() takes bundle IDs only (see
 // leader-menu-config.ts's APP_BUNDLE_IDS for the same adjustment applied
 // to the rest of the menu's app launchers).
@@ -157,31 +123,46 @@ function reportFailure(reply: ZjReply | null): boolean {
 }
 
 // Sends `focus`/`session` to the attached session (the one with a client to
-// switch), then brings the terminal forward.
+// switch), then brings the terminal forward. `current` comes from the
+// menu's prefetched state snapshot (state.attached[0]) rather than a fresh
+// fetch here -- that would cost a whole extra login-shell + pipe round trip
+// on every pick.
 async function sendToAttached(
+	current: string | undefined,
 	name: "focus" | "session",
 	payload: object,
 ): Promise<void> {
-	const resolved = await resolveState();
-	if (!resolved) return;
-	if (reportFailure(await pipe<ZjReply>(resolved.current, name, payload)))
+	if (!current) {
+		hs.ui.alert("Zellij: no session currently attached").show();
 		return;
+	}
+	if (reportFailure(await pipe<ZjReply>(current, name, payload))) return;
 	focusAlacritty();
 }
 
-function switchToSession(name: string): Promise<void> {
-	return sendToAttached("session", { name });
+function switchToSession(
+	current: string | undefined,
+	name: string,
+): Promise<void> {
+	return sendToAttached(current, "session", { name });
 }
 
-function focusTab(session: string, tab: number): Promise<void> {
-	return sendToAttached("focus", { session, tab });
+function focusTab(
+	current: string | undefined,
+	session: string,
+	tab: number,
+): Promise<void> {
+	return sendToAttached(current, "focus", { session, tab });
 }
 
 // Resurrects an EXITED session as a live background one (no client attached
 // yet, so nothing currently attached is disturbed), then switches to it.
-async function reviveSession(name: string): Promise<void> {
+async function reviveSession(
+	current: string | undefined,
+	name: string,
+): Promise<void> {
 	await loginShell(`zellij attach --create-background ${shellQuote(name)}`);
-	await switchToSession(name);
+	await switchToSession(current, name);
 }
 
 // Caps a list at KeyLabels' single-char capacity so every item actually
@@ -203,6 +184,7 @@ async function requireState(): Promise<ZjState> {
 }
 
 function sessionItems(state: ZjState): MenuItem[] {
+	const current = state.attached[0];
 	const labels = KeyLabels.generate(
 		state.sessions.length,
 		KeyLabels.NUMBER_CHARS,
@@ -210,7 +192,7 @@ function sessionItems(state: ZjState): MenuItem[] {
 	return state.sessions.map((session, i) => ({
 		key: labels[i]!,
 		label: session.name,
-		action: Callback(() => void switchToSession(session.name)),
+		action: Callback(() => void switchToSession(current, session.name)),
 	}));
 }
 
@@ -228,17 +210,18 @@ function tabItems(state: ZjState): MenuItem[] {
 	return tabs.map((tab, i) => ({
 		key: labels[i]!,
 		label: tab.name,
-		action: Callback(() => void focusTab(current, tab.position)),
+		action: Callback(() => void focusTab(current, current, tab.position)),
 	}));
 }
 
 function reviveItems(state: ZjState): MenuItem[] {
+	const current = state.attached[0];
 	const exited = capped(state.resurrectable);
 	const labels = KeyLabels.generate(exited.length);
 	return exited.map((name, i) => ({
 		key: labels[i]!,
 		label: name,
-		action: Callback(() => void reviveSession(name)),
+		action: Callback(() => void reviveSession(current, name)),
 	}));
 }
 
@@ -298,9 +281,10 @@ function jumpSpec(state: ZjState): ChooserSpec<JumpChoice> {
 			// Deferred past the chooser's own hide, same as the other modules'
 			// terminal side effects (see chooser-runtime.ts's onSelect).
 			hs.timer.doAfter(0, () => {
-				if (choice.exited) void reviveSession(choice.session);
-				else if (choice.tab === null) void switchToSession(choice.session);
-				else void focusTab(choice.session, choice.tab);
+				if (choice.exited) void reviveSession(current, choice.session);
+				else if (choice.tab === null)
+					void switchToSession(current, choice.session);
+				else void focusTab(current, choice.session, choice.tab);
 			});
 		},
 	};
@@ -309,8 +293,8 @@ function jumpSpec(state: ZjState): ChooserSpec<JumpChoice> {
 // The Zellij menu -- shown under the leader menu's "j" and directly by
 // init.ts's Hyper+G hotkey. One state fetch, started as soon as the level
 // containing it mounts, feeds every child: they're plain static submenus
-// rendered from that snapshot. Picks still re-resolve the attached session
-// at action time (see sendToAttached), so they act on live state.
+// rendered from that snapshot, and picks send straight to the snapshot's
+// attached session (see sendToAttached) without fetching again.
 export const menu = PrefetchSubmenu(requireState, (state) => [
 	{
 		key: "s",

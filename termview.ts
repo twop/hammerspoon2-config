@@ -4,36 +4,15 @@
 //
 // v1's hs.execute(cmd, true) (synchronous shell-out through a login+
 // interactive shell) has no v2 equivalent -- hs.task is callback/Promise
-// based here instead. That's fine for summon()/pick(), which were always
-// fire-and-forget (the task's own completion callback is where v1 cleared
-// its keepalive table too).
+// based here instead (see shell.ts). That's fine for summon()/pick(), which
+// were always fire-and-forget.
 
-export function shellQuote(s: string): string {
-	return "'" + String(s).replace(/'/g, `'\\''`) + "'";
-}
+import { shellQuote, spawnLoginShell } from "./shell";
+
+// Re-exported: callers (init.ts, leader-menu-config.ts) use Term.shellQuote.
+export { shellQuote };
 
 const BIN = "termview";
-const SHELL = hs.appinfo.environment.SHELL ?? "/bin/zsh";
-
-// hs.task objects must stay referenced or GC could collect (and kill) them
-// mid-flight -- same reasoning v1 had, kept here defensively even though
-// HSTask's actual GC semantics under JavaScriptCore weren't verified.
-const pendingTasks = new Set<HSTask>();
-
-function runLoginShell(argv: string): void {
-	let task: HSTask;
-	task = hs.task.create(
-		SHELL,
-		["-l", "-i", "-c", argv],
-		() => {
-			pendingTasks.delete(task);
-		},
-		null,
-		null,
-	);
-	pendingTasks.add(task);
-	task.start();
-}
 
 // Opens (or reuses/switches to) a persistent termview workspace running
 // cmd. cmd may be omitted -- termview then opens an interactive session in
@@ -45,7 +24,7 @@ export function summon(
 ): void {
 	const cmdPart = cmd ? `${shellQuote(cmd)} ` : "";
 	const argv = `${BIN} open ${cmdPart}--workspace ${workspace} --persistent${extraArgs ?? ""}`;
-	runLoginShell(argv);
+	spawnLoginShell(argv);
 }
 
 type PickCallback = (text: string) => void;
@@ -98,5 +77,5 @@ export function pick(
 		` --cwd ${shellQuote(cwd)}` +
 		` --report ${shellQuote(reportUrl)}`;
 	// Deliberately no --persistent: a pick is one-shot.
-	runLoginShell(argv);
+	spawnLoginShell(argv);
 }

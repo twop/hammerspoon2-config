@@ -1,15 +1,17 @@
-// termview.ts
+// shell.ts
+var SHELL = hs.appinfo.environment.SHELL ?? "/bin/zsh";
 function shellQuote(s) {
   return "'" + String(s).replace(/'/g, `'\\''`) + "'";
 }
-var BIN = "termview";
-var SHELL = hs.appinfo.environment.SHELL ?? "/bin/zsh";
+function loginShell(cmd) {
+  return hs.task.shell(`${SHELL} -l -c ${shellQuote(cmd)}`, {});
+}
 var pendingTasks = /* @__PURE__ */ new Set();
-function runLoginShell(argv) {
+function spawnLoginShell(cmd) {
   let task;
   task = hs.task.create(
     SHELL,
-    ["-l", "-i", "-c", argv],
+    ["-l", "-c", cmd],
     () => {
       pendingTasks.delete(task);
     },
@@ -19,10 +21,13 @@ function runLoginShell(argv) {
   pendingTasks.add(task);
   task.start();
 }
+
+// termview.ts
+var BIN = "termview";
 function summon(workspace, cmd, extraArgs) {
   const cmdPart = cmd ? `${shellQuote(cmd)} ` : "";
   const argv = `${BIN} open ${cmdPart}--workspace ${workspace} --persistent${extraArgs ?? ""}`;
-  runLoginShell(argv);
+  spawnLoginShell(argv);
 }
 var pendingPicks = /* @__PURE__ */ new Map();
 var pickHandlerBound = false;
@@ -44,7 +49,7 @@ function pick(workspace, cmd, cwd, callback) {
   pendingPicks.set(workspace, callback);
   const reportUrl = `hammerspoon2://termview-pick?workspace=${workspace}&stdout={stdout}`;
   const argv = `${BIN} open ${shellQuote(cmd)} --workspace ${workspace} --cwd ${shellQuote(cwd)} --report ${shellQuote(reportUrl)}`;
-  runLoginShell(argv);
+  spawnLoginShell(argv);
 }
 
 // nord-theme.ts
@@ -17522,10 +17527,6 @@ function generate(count, single = SINGLE_CHARS) {
 }
 
 // zellij-menu.ts
-var SHELL2 = hs.appinfo.environment.SHELL ?? "/bin/zsh";
-function loginShell(cmd) {
-  return hs.task.shell(`${SHELL2} -l -i -c ${shellQuote(cmd)}`, {});
-}
 async function pipe(session, name, payload = {}) {
   const { exitCode, stdout } = await loginShell(
     `zellij --session ${shellQuote(session)} pipe --plugin zj_hs_jump --name ${name} -- ${shellQuote(JSON.stringify(payload))} </dev/null`
@@ -17563,19 +17564,6 @@ async function fetchState() {
   }
   return null;
 }
-async function resolveState() {
-  const state = await fetchState();
-  if (!state) {
-    hs.ui.alert("Zellij: zj_hs_jump not reachable").show();
-    return null;
-  }
-  const current = state.attached[0];
-  if (!current) {
-    hs.ui.alert("Zellij: no session currently attached").show();
-    return null;
-  }
-  return { state, current };
-}
 var ALACRITTY_BUNDLE_ID = "org.alacritty";
 function focusAlacritty() {
   void focusApp(ALACRITTY_BUNDLE_ID);
@@ -17585,22 +17573,23 @@ function reportFailure(reply) {
   hs.ui.alert(`Zellij: ${reply?.error ?? "no reply from zj_hs_jump"}`).show();
   return true;
 }
-async function sendToAttached(name, payload) {
-  const resolved = await resolveState();
-  if (!resolved) return;
-  if (reportFailure(await pipe(resolved.current, name, payload)))
+async function sendToAttached(current, name, payload) {
+  if (!current) {
+    hs.ui.alert("Zellij: no session currently attached").show();
     return;
+  }
+  if (reportFailure(await pipe(current, name, payload))) return;
   focusAlacritty();
 }
-function switchToSession(name) {
-  return sendToAttached("session", { name });
+function switchToSession(current, name) {
+  return sendToAttached(current, "session", { name });
 }
-function focusTab(session, tab) {
-  return sendToAttached("focus", { session, tab });
+function focusTab(current, session, tab) {
+  return sendToAttached(current, "focus", { session, tab });
 }
-async function reviveSession(name) {
+async function reviveSession(current, name) {
   await loginShell(`zellij attach --create-background ${shellQuote(name)}`);
-  await switchToSession(name);
+  await switchToSession(current, name);
 }
 function capped(list, pool = SINGLE_CHARS) {
   return list.slice(0, capacity(pool));
@@ -17611,6 +17600,7 @@ async function requireState() {
   return state;
 }
 function sessionItems(state) {
+  const current = state.attached[0];
   const labels = generate(
     state.sessions.length,
     NUMBER_CHARS
@@ -17618,7 +17608,7 @@ function sessionItems(state) {
   return state.sessions.map((session, i) => ({
     key: labels[i],
     label: session.name,
-    action: Callback(() => void switchToSession(session.name))
+    action: Callback(() => void switchToSession(current, session.name))
   }));
 }
 function tabItems(state) {
@@ -17633,16 +17623,17 @@ function tabItems(state) {
   return tabs.map((tab, i) => ({
     key: labels[i],
     label: tab.name,
-    action: Callback(() => void focusTab(current, tab.position))
+    action: Callback(() => void focusTab(current, current, tab.position))
   }));
 }
 function reviveItems(state) {
+  const current = state.attached[0];
   const exited = capped(state.resurrectable);
   const labels = generate(exited.length);
   return exited.map((name, i) => ({
     key: labels[i],
     label: name,
-    action: Callback(() => void reviveSession(name))
+    action: Callback(() => void reviveSession(current, name))
   }));
 }
 function jumpSpec(state) {
@@ -17685,9 +17676,10 @@ function jumpSpec(state) {
     searchSubText: true,
     onSelect: (choice) => {
       hs.timer.doAfter(0, () => {
-        if (choice.exited) void reviveSession(choice.session);
-        else if (choice.tab === null) void switchToSession(choice.session);
-        else void focusTab(choice.session, choice.tab);
+        if (choice.exited) void reviveSession(current, choice.session);
+        else if (choice.tab === null)
+          void switchToSession(current, choice.session);
+        else void focusTab(current, choice.session, choice.tab);
       });
     }
   };
