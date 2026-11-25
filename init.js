@@ -446,6 +446,18 @@ var KEY_DOWN2 = hs.eventtap.eventTypes["keyDown"];
 var LEFT_MOUSE_DOWN = hs.eventtap.eventTypes["leftMouseDown"];
 var RIGHT_MOUSE_DOWN = hs.eventtap.eventTypes["rightMouseDown"];
 var OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"];
+var Submenu = (submenu) => ({ kind: "submenu", submenu });
+var Chooser = (spec8) => ({
+  kind: "chooser",
+  spec: () => {
+    const resolved = spec8();
+    return resolved instanceof Promise ? resolved.then(eraseChooser) : eraseChooser(resolved);
+  }
+});
+var App = (bundleID) => ({ kind: "app", bundleID });
+var Cmd = (path, ...args) => ({ kind: "cmd", path, args });
+var Url = (url) => ({ kind: "url", url });
+var Callback = (run) => ({ kind: "callback", run });
 var REVEAL_DELAY_SECONDS = 0.5;
 var PLACEHOLDER_ENTER_DURATION = 0.2;
 var SPLIT_TRANSITION_DURATION = 0.22;
@@ -629,7 +641,7 @@ async function focusApp(bundleID) {
   hs.application.matchingBundleID(bundleID)?.activate();
 }
 function runShellCommand(path, args) {
-  const task = hs.task.create(path, args, null, null, null);
+  const task = hs.task.create(path, [...args], null, null, null);
   task.start();
 }
 function selectOption(opt, breadcrumb) {
@@ -669,7 +681,7 @@ function selectOption(opt, breadcrumb) {
     case "cmd":
       dispatch({
         type: "runEffect",
-        run: () => runShellCommand(action.path, action.args ?? [])
+        run: () => runShellCommand(action.path, action.args)
       });
       break;
     case "url":
@@ -17500,10 +17512,7 @@ async function tabsSubmenu() {
   return tabs.map((tab, i) => ({
     key: labels[i],
     label: tab.name,
-    action: {
-      kind: "callback",
-      run: () => void focusTab(current, tab.position)
-    }
+    action: Callback(() => void focusTab(current, tab.position))
   }));
 }
 async function reviveSubmenu() {
@@ -17517,7 +17526,7 @@ async function reviveSubmenu() {
   return exited.map((name, i) => ({
     key: labels[i],
     label: name,
-    action: { kind: "callback", run: () => void reviveSession(name) }
+    action: Callback(() => void reviveSession(name))
   }));
 }
 async function jumpSpec() {
@@ -17573,52 +17582,43 @@ async function items() {
     {
       key: "s",
       label: "Switch session",
-      action: {
-        kind: "submenu",
-        submenu: async () => {
-          const state = await fetchState();
-          if (!state) return [];
-          const labels = generate(
-            state.sessions.length,
-            NUMBER_CHARS
-          );
-          return state.sessions.map(
-            (session, i) => ({
-              key: labels[i],
-              label: session.name,
-              action: {
-                kind: "callback",
-                run: () => switchToSession(session.name)
-              }
-            })
-          );
-        }
-      }
+      action: Submenu(async () => {
+        const state = await fetchState();
+        if (!state) return [];
+        const labels = generate(
+          state.sessions.length,
+          NUMBER_CHARS
+        );
+        return state.sessions.map(
+          (session, i) => ({
+            key: labels[i],
+            label: session.name,
+            action: Callback(() => switchToSession(session.name))
+          })
+        );
+      })
     },
     {
       key: "f",
       label: "Find session/tab",
-      action: {
-        kind: "chooser",
-        spec: async () => eraseChooser(await jumpSpec())
-      }
+      action: Chooser(jumpSpec)
     },
     {
       key: "t",
       label: "Switch tab",
-      action: { kind: "submenu", submenu: tabsSubmenu }
+      action: Submenu(tabsSubmenu)
     },
     {
       key: "r",
       label: "Revive session",
-      action: { kind: "submenu", submenu: reviveSubmenu }
+      action: Submenu(reviveSubmenu)
     }
   ];
 }
 var node = {
   key: "j",
   label: "Zellij",
-  action: { kind: "submenu", submenu: items }
+  action: Submenu(items)
 };
 
 // leader-menu-config.ts
@@ -17640,7 +17640,7 @@ var APP_BUNDLE_IDS = {
   freeCAD: "org.freecad.FreeCAD"
 };
 function appItem(key, label, bundleID) {
-  return { key, label, action: { kind: "app", bundleID } };
+  return { key, label, action: App(bundleID) };
 }
 function setWindowFrame(widthFraction, position) {
   const win = hs.window.focusedWindow();
@@ -17686,221 +17686,181 @@ var menuTree = [
   {
     key: "t",
     label: "Alacritty",
-    action: { kind: "app", bundleID: APP_BUNDLE_IDS.alacritty }
+    action: App(APP_BUNDLE_IDS.alacritty)
   },
   {
     key: "r",
     label: "Resize window",
     icon: symbol("rectangle.split.3x3.fill"),
-    action: {
-      kind: "submenu",
-      submenu: [
-        {
-          key: "h",
-          label: "Left 1/3",
-          icon: symbol("inset.filled.leftthird.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(1 / 3, "left")
-          }
-        },
-        {
-          key: "l",
-          label: "Right 1/3",
-          icon: symbol("inset.filled.trailingthird.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(1 / 3, "right")
-          }
-        },
-        {
-          key: "j",
-          label: "Left 2/3",
-          icon: symbol("inset.filled.lefthalf.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(2 / 3, "left")
-          }
-        },
-        {
-          key: "k",
-          label: "Right 2/3",
-          icon: symbol("inset.filled.righthalf.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(2 / 3, "right")
-          }
-        },
-        {
-          key: "m",
-          label: "Maximize",
-          icon: symbol("inset.filled.rectangle"),
-          action: { kind: "callback", run: maximizeFocusedWindow }
-        },
-        {
-          key: ",",
-          label: "Center 2/3",
-          icon: symbol("inset.filled.center.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(2 / 3, "center")
-          }
-        },
-        {
-          key: ".",
-          label: "Center 1/2",
-          icon: symbol("inset.filled.rectangle.portrait"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(1 / 2, "center")
-          }
-        },
-        {
-          key: "H",
-          label: "Left 1/2",
-          icon: symbol("inset.filled.lefthalf.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(1 / 2, "left")
-          }
-        },
-        {
-          key: "L",
-          label: "Right 1/2",
-          icon: symbol("inset.filled.righthalf.rectangle"),
-          action: {
-            kind: "callback",
-            run: () => setWindowFrame(1 / 2, "right")
-          }
-        },
-        {
-          key: "f",
-          label: "Full screen",
-          icon: symbol("arrow.up.backward.and.arrow.down.forward.rectangle"),
-          action: { kind: "callback", run: toggleFullScreenFocusedWindow }
-        }
-      ]
-    }
+    action: Submenu([
+      {
+        key: "h",
+        label: "Left 1/3",
+        icon: symbol("inset.filled.leftthird.rectangle"),
+        action: Callback(() => setWindowFrame(1 / 3, "left"))
+      },
+      {
+        key: "l",
+        label: "Right 1/3",
+        icon: symbol("inset.filled.trailingthird.rectangle"),
+        action: Callback(() => setWindowFrame(1 / 3, "right"))
+      },
+      {
+        key: "j",
+        label: "Left 2/3",
+        icon: symbol("inset.filled.lefthalf.rectangle"),
+        action: Callback(() => setWindowFrame(2 / 3, "left"))
+      },
+      {
+        key: "k",
+        label: "Right 2/3",
+        icon: symbol("inset.filled.righthalf.rectangle"),
+        action: Callback(() => setWindowFrame(2 / 3, "right"))
+      },
+      {
+        key: "m",
+        label: "Maximize",
+        icon: symbol("inset.filled.rectangle"),
+        action: Callback(maximizeFocusedWindow)
+      },
+      {
+        key: ",",
+        label: "Center 2/3",
+        icon: symbol("inset.filled.center.rectangle"),
+        action: Callback(() => setWindowFrame(2 / 3, "center"))
+      },
+      {
+        key: ".",
+        label: "Center 1/2",
+        icon: symbol("inset.filled.rectangle.portrait"),
+        action: Callback(() => setWindowFrame(1 / 2, "center"))
+      },
+      {
+        key: "H",
+        label: "Left 1/2",
+        icon: symbol("inset.filled.lefthalf.rectangle"),
+        action: Callback(() => setWindowFrame(1 / 2, "left"))
+      },
+      {
+        key: "L",
+        label: "Right 1/2",
+        icon: symbol("inset.filled.righthalf.rectangle"),
+        action: Callback(() => setWindowFrame(1 / 2, "right"))
+      },
+      {
+        key: "f",
+        label: "Full screen",
+        icon: symbol("arrow.up.backward.and.arrow.down.forward.rectangle"),
+        action: Callback(toggleFullScreenFocusedWindow)
+      }
+    ])
   },
   {
     key: "b",
     label: "Zen Browser",
-    action: { kind: "app", bundleID: APP_BUNDLE_IDS.zenBrowser }
+    action: App(APP_BUNDLE_IDS.zenBrowser)
   },
   {
     key: "f",
     label: "Hide others",
     icon: symbol("rectangle.and.hand.point.up.left"),
-    action: { kind: "callback", run: hideOtherApps }
+    action: Callback(hideOtherApps)
   },
   {
     key: "s",
     label: "Screenshots",
     icon: symbol("camera"),
-    action: {
-      kind: "submenu",
-      submenu: [
-        {
-          key: "y",
-          label: "Screenshot",
-          icon: symbol("circle.rectangle.dashed"),
-          action: {
-            kind: "cmd",
-            path: "/usr/sbin/screencapture",
-            args: ["-ci"]
-          }
-        },
-        {
-          key: "a",
-          label: "Show app",
-          icon: symbol("app.badge"),
-          action: { kind: "url", url: "shottr://show" }
-        },
-        {
-          key: "s",
-          label: "Area screenshot",
-          icon: symbol("viewfinder"),
-          action: { kind: "url", url: "shottr://grab/area?then=copy" }
-        },
-        {
-          key: "r",
-          label: "repeat screenshot then edit",
-          icon: symbol("viewfinder"),
-          action: { kind: "url", url: "shottr://grab/repeat?then=edit" }
-        },
-        {
-          key: "w",
-          label: "Window screenshot",
-          icon: symbol("macwindow.badge.plus"),
-          action: { kind: "url", url: "shottr://grab/window" }
-        }
-      ]
-    }
+    action: Submenu([
+      {
+        key: "y",
+        label: "Screenshot",
+        icon: symbol("circle.rectangle.dashed"),
+        action: Cmd("/usr/sbin/screencapture", "-ci")
+      },
+      {
+        key: "a",
+        label: "Show app",
+        icon: symbol("app.badge"),
+        action: Url("shottr://show")
+      },
+      {
+        key: "s",
+        label: "Area screenshot",
+        icon: symbol("viewfinder"),
+        action: Url("shottr://grab/area?then=copy")
+      },
+      {
+        key: "r",
+        label: "repeat screenshot then edit",
+        icon: symbol("viewfinder"),
+        action: Url("shottr://grab/repeat?then=edit")
+      },
+      {
+        key: "w",
+        label: "Window screenshot",
+        icon: symbol("macwindow.badge.plus"),
+        action: Url("shottr://grab/window")
+      }
+    ])
   },
   {
     key: "e",
     label: "Pick emoji",
     icon: symbol("face.smiling"),
-    action: {
-      kind: "url",
-      url: "raycast://extensions/raycast/emoji-symbols/search-emoji-symbols"
-    }
+    action: Url("raycast://extensions/raycast/emoji-symbols/search-emoji-symbols")
   },
   {
     key: "E",
     label: "Pick emoji (native)",
     icon: symbol("face.smiling"),
-    action: { kind: "chooser", spec: () => eraseChooser(spec()) }
+    action: Chooser(() => spec())
   },
   {
     key: "d",
     label: "Apps",
     icon: symbol("macwindow"),
-    action: {
-      kind: "submenu",
-      submenu: [
-        appItem("t", "Telegram", APP_BUNDLE_IDS.telegram),
-        appItem("z", "Zed", APP_BUNDLE_IDS.zed),
-        appItem("a", "Arc", APP_BUNDLE_IDS.arc),
-        appItem("v", "VS Code", APP_BUNDLE_IDS.vscode),
-        appItem("m", "Messages", APP_BUNDLE_IDS.messages),
-        appItem("s", "Safari", APP_BUNDLE_IDS.safari),
-        appItem("b", "Bear", APP_BUNDLE_IDS.bear),
-        appItem("p", "1Password", APP_BUNDLE_IDS.onePassword),
-        appItem("e", "ElegooSlicer", APP_BUNDLE_IDS.elegooSlicer),
-        appItem("c", "FreeCAD", APP_BUNDLE_IDS.freeCAD)
-      ]
-    }
+    action: Submenu([
+      appItem("t", "Telegram", APP_BUNDLE_IDS.telegram),
+      appItem("z", "Zed", APP_BUNDLE_IDS.zed),
+      appItem("a", "Arc", APP_BUNDLE_IDS.arc),
+      appItem("v", "VS Code", APP_BUNDLE_IDS.vscode),
+      appItem("m", "Messages", APP_BUNDLE_IDS.messages),
+      appItem("s", "Safari", APP_BUNDLE_IDS.safari),
+      appItem("b", "Bear", APP_BUNDLE_IDS.bear),
+      appItem("p", "1Password", APP_BUNDLE_IDS.onePassword),
+      appItem("e", "ElegooSlicer", APP_BUNDLE_IDS.elegooSlicer),
+      appItem("c", "FreeCAD", APP_BUNDLE_IDS.freeCAD)
+    ])
   },
   {
     key: "m",
     label: "Search menu items",
     icon: symbol("menucard"),
-    action: { kind: "chooser", spec: () => spec2() }
+    action: Chooser(() => spec2())
   },
   {
     key: "/",
     label: "Open or focus app",
     icon: symbol("magnifyingglass"),
-    action: { kind: "chooser", spec: () => eraseChooser(spec3()) }
+    action: Chooser(() => spec3())
   },
   {
     key: " ",
     label: "Switch app",
     icon: symbol("rectangle.stack"),
-    action: { kind: "chooser", spec: () => eraseChooser(spec4()) }
+    action: Chooser(() => spec4())
   },
   {
     key: "v",
     label: "Clipboard history",
     icon: symbol("doc.on.clipboard"),
-    action: { kind: "chooser", spec: () => eraseChooser(spec5()) }
+    action: Chooser(() => spec5())
   },
   {
     key: "p",
     label: "Process explorer",
     icon: symbol("cpu"),
-    action: { kind: "chooser", spec: () => spec6() }
+    action: Chooser(() => spec6())
   },
   {
     key: "a",
@@ -17908,149 +17868,115 @@ var menuTree = [
     // Real app icon, matching the original Leader Key config's iconPath
     // (a plain .app path there resolves to the app's own icon).
     icon: HSImage.fromAppBundle(APP_BUNDLE_IDS.arc) ?? void 0,
-    action: {
-      kind: "submenu",
-      submenu: [
-        {
-          key: "a",
-          label: "Select space",
-          icon: symbol("list.star"),
-          action: {
-            kind: "url",
-            url: "raycast://extensions/the-browser-company/arc/search-spaces"
-          }
-        },
-        {
-          key: "s",
-          label: "Search tab",
-          icon: symbol("filemenu.and.selection"),
-          action: {
-            kind: "url",
-            url: "raycast://extensions/the-browser-company/arc/search-tabs"
-          }
-        },
-        {
-          key: "t",
-          label: "new tab",
-          icon: symbol("plus.square.fill.on.square.fill"),
-          action: {
-            kind: "url",
-            url: "raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D"
-          }
-        }
-      ]
-    }
+    action: Submenu([
+      {
+        key: "a",
+        label: "Select space",
+        icon: symbol("list.star"),
+        action: Url("raycast://extensions/the-browser-company/arc/search-spaces")
+      },
+      {
+        key: "s",
+        label: "Search tab",
+        icon: symbol("filemenu.and.selection"),
+        action: Url("raycast://extensions/the-browser-company/arc/search-tabs")
+      },
+      {
+        key: "t",
+        label: "new tab",
+        icon: symbol("plus.square.fill.on.square.fill"),
+        action: Url("raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D")
+      }
+    ])
   },
   {
     key: "u",
     label: "Utilities",
     icon: symbol("ellipsis"),
-    action: {
-      kind: "submenu",
-      submenu: [
-        {
-          key: "m",
-          label: "Music",
-          action: {
-            kind: "submenu",
-            submenu: [
-              {
-                key: ",",
-                label: "Play/Pause",
-                action: {
-                  kind: "url",
-                  url: "raycast://extensions/fedevitaledev/music/toggle-play-pause"
-                }
-              }
-            ]
+    action: Submenu([
+      {
+        key: "m",
+        label: "Music",
+        action: Submenu([
+          {
+            key: ",",
+            label: "Play/Pause",
+            action: Url("raycast://extensions/fedevitaledev/music/toggle-play-pause")
           }
-        },
-        {
-          key: "g",
-          label: "View google cal event",
-          icon: symbol("calendar"),
-          action: {
-            kind: "url",
-            url: "raycast://extensions/thomas/google-calendar/list-events"
-          }
-        },
-        {
-          key: "x",
-          label: "Tuxedo",
-          icon: symbol("terminal"),
-          action: {
-            kind: "callback",
-            run: () => summon("tuxedo", "tuxedo")
-          }
-        },
-        {
-          key: "n",
-          label: "Nushell",
-          icon: symbol("terminal"),
-          action: {
-            kind: "callback",
-            run: () => summon("nu", void 0, " --shell nu")
-          }
-        },
-        {
-          key: "y",
-          label: "Yazi",
-          icon: symbol("folder"),
-          action: {
-            kind: "callback",
-            run: () => summon(
-              "yazi",
-              "yazi",
-              " --cwd " + shellQuote(hs.fs.homeDirectory())
-            )
-          }
-        },
-        {
-          key: "h",
-          label: "Find file (Helix)",
-          icon: symbol("doc.text.magnifyingglass"),
-          action: {
-            kind: "callback",
-            run: () => {
-              pick("file-picker", "fzf", "~/work", (picked) => {
-                const path = /^[~/]/.test(picked) ? picked : "~/work/" + picked;
-                summon("helix", "hx " + shellQuote(path));
-              });
-            }
-          }
-        },
-        {
-          key: "d",
-          label: "Daily note",
-          icon: symbol("note.text"),
-          action: { kind: "callback", run: openDailyNote }
-        },
-        {
-          key: "D",
-          label: "Daily note (Shelv)",
-          icon: symbol("note.text"),
-          action: { kind: "callback", run: openDailyNoteInShelv }
-        },
-        {
-          key: "q",
-          label: "Quick note",
-          icon: symbol("square.and.pencil"),
-          action: { kind: "chooser", spec: () => eraseChooser(spec7()) }
-        },
-        {
-          key: "c",
-          label: "Clear clipboard history",
-          icon: symbol("trash"),
-          action: { kind: "callback", run: () => clear() }
-        },
-        {
-          key: "r",
-          label: "Reload config",
-          icon: symbol("arrow.clockwise"),
-          action: { kind: "callback", run: () => hs.reload() }
-        }
-      ]
-    }
+        ])
+      },
+      {
+        key: "g",
+        label: "View google cal event",
+        icon: symbol("calendar"),
+        action: Url("raycast://extensions/thomas/google-calendar/list-events")
+      },
+      {
+        key: "x",
+        label: "Tuxedo",
+        icon: symbol("terminal"),
+        action: Callback(() => summon("tuxedo", "tuxedo"))
+      },
+      {
+        key: "n",
+        label: "Nushell",
+        icon: symbol("terminal"),
+        action: Callback(() => summon("nu", void 0, " --shell nu"))
+      },
+      {
+        key: "y",
+        label: "Yazi",
+        icon: symbol("folder"),
+        action: Callback(
+          () => summon(
+            "yazi",
+            "yazi",
+            " --cwd " + shellQuote(hs.fs.homeDirectory())
+          )
+        )
+      },
+      {
+        key: "h",
+        label: "Find file (Helix)",
+        icon: symbol("doc.text.magnifyingglass"),
+        action: Callback(() => {
+          pick("file-picker", "fzf", "~/work", (picked) => {
+            const path = /^[~/]/.test(picked) ? picked : "~/work/" + picked;
+            summon("helix", "hx " + shellQuote(path));
+          });
+        })
+      },
+      {
+        key: "d",
+        label: "Daily note",
+        icon: symbol("note.text"),
+        action: Callback(openDailyNote)
+      },
+      {
+        key: "D",
+        label: "Daily note (Shelv)",
+        icon: symbol("note.text"),
+        action: Callback(openDailyNoteInShelv)
+      },
+      {
+        key: "q",
+        label: "Quick note",
+        icon: symbol("square.and.pencil"),
+        action: Chooser(() => spec7())
+      },
+      {
+        key: "c",
+        label: "Clear clipboard history",
+        icon: symbol("trash"),
+        action: Callback(() => clear())
+      },
+      {
+        key: "r",
+        label: "Reload config",
+        icon: symbol("arrow.clockwise"),
+        action: Callback(() => hs.reload())
+      }
+    ])
   },
   node
 ];

@@ -34,7 +34,11 @@
 import { Theme, canvasColor } from "./nord-theme";
 import { Canvas, cornerRadii } from "./canvas";
 import { flipTopLeftY, flipFrameY } from "./screen-geometry";
-import { mountChooser, type ChooserSpec } from "./chooser-runtime";
+import {
+	mountChooser,
+	eraseChooser,
+	type ChooserSpec,
+} from "./chooser-runtime";
 
 // `noUncheckedIndexedAccess` turns every Record<string, T> lookup -- dot
 // notation included -- into `T | undefined`, so these named constants (all
@@ -50,16 +54,76 @@ const OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"]!;
 // MENU TREE TYPES
 // ============================================================
 
+export type SubmenuSource =
+	| MenuItem[]
+	| (() => MenuItem[] | Promise<MenuItem[]>);
+export type ChooserSource = () => ChooserSpec | Promise<ChooserSpec>;
+
+// One shared phantom brand (type-only -- nothing exists at runtime) so a
+// MenuAction can only come from the capitalized constructors below, never
+// a hand-written object literal. `kind` stays a plain string discriminant,
+// so the engine's switches below narrow exactly as before.
+declare const MenuActionBrand: unique symbol;
+type Branded<T> = T & { readonly [MenuActionBrand]: true };
+
+export type SubmenuAction = Branded<{
+	readonly kind: "submenu";
+	readonly submenu: SubmenuSource;
+}>;
+export type ChooserAction = Branded<{
+	readonly kind: "chooser";
+	readonly spec: ChooserSource;
+}>;
+export type AppAction = Branded<{ readonly kind: "app"; readonly bundleID: string }>;
+export type CmdAction = Branded<{
+	readonly kind: "cmd";
+	readonly path: string;
+	readonly args: readonly string[];
+}>;
+export type UrlAction = Branded<{ readonly kind: "url"; readonly url: string }>;
+export type CallbackAction = Branded<{
+	readonly kind: "callback";
+	readonly run: () => void;
+}>;
+
 export type MenuAction =
-	| {
-			kind: "submenu";
-			submenu: MenuItem[] | (() => MenuItem[] | Promise<MenuItem[]>);
-	  }
-	| { kind: "chooser"; spec: () => ChooserSpec | Promise<ChooserSpec> }
-	| { kind: "app"; bundleID: string }
-	| { kind: "cmd"; path: string; args?: string[] }
-	| { kind: "url"; url: string }
-	| { kind: "callback"; run: () => void };
+	| SubmenuAction
+	| ChooserAction
+	| AppAction
+	| CmdAction
+	| UrlAction
+	| CallbackAction;
+
+export const Submenu = (submenu: SubmenuSource): SubmenuAction =>
+	({ kind: "submenu", submenu }) as SubmenuAction;
+
+// Generic over the spec's row type and erases it here, so call sites pass
+// their module's typed spec() straight through instead of each wrapping it
+// in eraseChooser() by hand.
+export const Chooser = <T extends object>(
+	spec: () => ChooserSpec<T> | Promise<ChooserSpec<T>>,
+): ChooserAction =>
+	({
+		kind: "chooser",
+		spec: () => {
+			const resolved = spec();
+			return resolved instanceof Promise
+				? resolved.then(eraseChooser)
+				: eraseChooser(resolved);
+		},
+	}) as ChooserAction;
+
+export const App = (bundleID: string): AppAction =>
+	({ kind: "app", bundleID }) as AppAction;
+
+export const Cmd = (path: string, ...args: string[]): CmdAction =>
+	({ kind: "cmd", path, args: args as readonly string[] }) as CmdAction;
+
+export const Url = (url: string): UrlAction =>
+	({ kind: "url", url }) as UrlAction;
+
+export const Callback = (run: () => void): CallbackAction =>
+	({ kind: "callback", run }) as CallbackAction;
 
 export interface MenuItem {
 	key: string;
@@ -369,8 +433,8 @@ export async function focusApp(bundleID: string): Promise<void> {
 	hs.application.matchingBundleID(bundleID)?.activate();
 }
 
-function runShellCommand(path: string, args: string[]): void {
-	const task = hs.task.create(path, args, null, null, null);
+function runShellCommand(path: string, args: readonly string[]): void {
+	const task = hs.task.create(path, [...args], null, null, null);
 	task.start();
 }
 
@@ -425,7 +489,7 @@ function selectOption(opt: MenuItem, breadcrumb: string[]): void {
 		case "cmd":
 			dispatch({
 				type: "runEffect",
-				run: () => runShellCommand(action.path, action.args ?? []),
+				run: () => runShellCommand(action.path, action.args),
 			});
 			break;
 		case "url":

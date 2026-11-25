@@ -9,8 +9,14 @@
 
 import * as KeyLabels from "./key-labels";
 import { shellQuote } from "./termview";
-import { focusApp, type MenuItem } from "./leader-menu";
-import { eraseChooser, type ChooserSpec } from "./chooser-runtime";
+import {
+	focusApp,
+	Callback,
+	Chooser,
+	Submenu,
+	type MenuItem,
+} from "./leader-menu";
+import type { ChooserSpec } from "./chooser-runtime";
 import { menuTree } from "./leader-menu-config";
 
 // hs.task.shell runs commands through a bare, non-login /bin/sh -- PATH is
@@ -202,10 +208,7 @@ export async function tabsSubmenu(): Promise<MenuItem[]> {
 	return tabs.map((tab, i) => ({
 		key: labels[i]!,
 		label: tab.name,
-		action: {
-			kind: "callback",
-			run: () => void focusTab(current, tab.position),
-		},
+		action: Callback(() => void focusTab(current, tab.position)),
 	}));
 }
 
@@ -220,7 +223,7 @@ export async function reviveSubmenu(): Promise<MenuItem[]> {
 	return exited.map((name, i) => ({
 		key: labels[i]!,
 		label: name,
-		action: { kind: "callback", run: () => void reviveSession(name) },
+		action: Callback(() => void reviveSession(name)),
 	}));
 }
 
@@ -296,48 +299,39 @@ export async function items(): Promise<MenuItem[]> {
 		{
 			key: "s",
 			label: "Switch session",
-			action: {
-				kind: "submenu",
-				submenu: async () => {
-					const state = await fetchState();
-					if (!state) return [];
+			action: Submenu(async () => {
+				const state = await fetchState();
+				if (!state) return [];
 
-					const labels = KeyLabels.generate(
-						state.sessions.length,
-						KeyLabels.NUMBER_CHARS,
-					);
+				const labels = KeyLabels.generate(
+					state.sessions.length,
+					KeyLabels.NUMBER_CHARS,
+				);
 
-					return state.sessions.map(
-						(session, i) =>
-							({
-								key: labels[i],
-								label: session.name,
-								action: {
-									kind: "callback",
-									run: () => switchToSession(session.name),
-								},
-							}) satisfies MenuItem,
-					);
-				},
-			},
+				return state.sessions.map(
+					(session, i) =>
+						({
+							key: labels[i]!,
+							label: session.name,
+							action: Callback(() => switchToSession(session.name)),
+						}) satisfies MenuItem,
+				);
+			}),
 		},
 		{
 			key: "f",
 			label: "Find session/tab",
-			action: {
-				kind: "chooser",
-				spec: async () => eraseChooser(await jumpSpec()),
-			},
+			action: Chooser(jumpSpec),
 		},
 		{
 			key: "t",
 			label: "Switch tab",
-			action: { kind: "submenu", submenu: tabsSubmenu },
+			action: Submenu(tabsSubmenu),
 		},
 		{
 			key: "r",
 			label: "Revive session",
-			action: { kind: "submenu", submenu: reviveSubmenu },
+			action: Submenu(reviveSubmenu),
 		},
 	];
 }
@@ -345,5 +339,5 @@ export async function items(): Promise<MenuItem[]> {
 export const node: MenuItem = {
 	key: "j",
 	label: "Zellij",
-	action: { kind: "submenu", submenu: items },
+	action: Submenu(items),
 };
