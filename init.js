@@ -573,7 +573,10 @@ var OTHER_MOUSE_DOWN = hs.eventtap.eventTypes["otherMouseDown"];
 var Submenu = (submenu) => ({ kind: "submenu", submenu });
 var PrefetchSubmenu = (load, render2) => ({
   kind: "prefetchSubmenu",
-  load: async () => render2(await load())
+  load: async () => {
+    const rendered = render2(await load());
+    return Array.isArray(rendered) ? { items: rendered } : rendered;
+  }
 });
 var Chooser = (spec8) => ({
   kind: "chooser",
@@ -650,11 +653,11 @@ function errorMessage(err) {
 function loadEffect(session, action) {
   return (dispatch2) => {
     action.load().then(
-      (items) => dispatch2({
+      (content) => dispatch2({
         type: "loadSettled",
         session,
         action,
-        result: { status: "ready", items }
+        result: { status: "ready", ...content }
       }),
       (err) => dispatch2({
         type: "loadSettled",
@@ -787,9 +790,13 @@ function mountScene(scene, canGoBack) {
 function sceneItems(scene) {
   return scene.content.status === "ready" ? scene.content.items : [];
 }
+function sceneBreadcrumb(scene) {
+  const { content } = scene;
+  return content.status === "ready" && content.title ? [...scene.breadcrumb, content.title] : scene.breadcrumb;
+}
 function mountMenu(scene) {
   if (revealed) renderMenu(scene);
-  bindKeys(sceneItems(scene), scene.breadcrumb);
+  bindKeys(sceneItems(scene), sceneBreadcrumb(scene));
   startFocusWatcher();
   startMouseWatcher();
   return {
@@ -967,7 +974,7 @@ function statusText(content) {
   }
 }
 function renderMenu(scene, opts = {}) {
-  const { breadcrumb } = scene;
+  const breadcrumb = sceneBreadcrumb(scene);
   const options = sceneItems(scene);
   const status = statusText(scene.content);
   const rowCount = options.length + (status ? 1 : 0);
@@ -17807,7 +17814,10 @@ var menu = PrefetchSubmenu(requireState, (state) => [
     action: Chooser(() => newSessionSpec(state.attached[0]))
   }
 ]);
-var tabsMenu = PrefetchSubmenu(requireState, tabItems);
+var tabsMenu = PrefetchSubmenu(requireState, (state) => ({
+  title: state.attached[0] ?? "No session attached",
+  items: tabItems(state)
+}));
 
 // leader-menu-config.ts
 function symbol(name) {

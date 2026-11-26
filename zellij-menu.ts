@@ -367,4 +367,7 @@ export const menu = PrefetchSubmenu(requireState, (state) => [
 
 // Just the attached session's tabs (the "t" list above) as its own root,
 // for init.ts's Hyper+T -- same one-fetch prefetch, no menu level first.
-export const tabsMenu = PrefetchSubmenu(requireState, tabItems);
+export const tabsMenu = PrefetchSubmenu(requireState, (state) => ({
+	title: state.attached[0] ?? "No session attached",
+	items: tabItems(state),
+}));

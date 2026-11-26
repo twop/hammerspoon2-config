@@ -78,12 +78,20 @@ export type SubmenuAction = Branded<{
 	readonly kind: "submenu";
 	readonly submenu: MenuItem[];
 }>;
+// What a PrefetchSubmenu's render produces: its items, plus an optional
+// title appended to the breadcrumb -- for a heading that depends on the
+// loaded data (e.g. zellij-menu.ts's tabsMenu naming the attached session).
+export interface MenuContent {
+	items: MenuItem[];
+	title?: string;
+}
+
 // Its data type is erased by fusing load + render into one thunk (see
-// PrefetchSubmenu() below) -- the engine only ever needs the final items.
+// PrefetchSubmenu() below) -- the engine only ever needs the final content.
 // The action object itself is the engine's cache key, see Model.loads.
 export type PrefetchSubmenuAction = Branded<{
 	readonly kind: "prefetchSubmenu";
-	readonly load: () => Promise<MenuItem[]>;
+	readonly load: () => Promise<MenuContent>;
 }>;
 export type ChooserAction = Branded<{
 	readonly kind: "chooser";
@@ -126,11 +134,14 @@ export const Submenu = (submenu: MenuItem[]): SubmenuAction =>
 // a throwing render() shows as an error row in the submenu itself.
 export const PrefetchSubmenu = <T>(
 	load: () => Promise<T>,
-	render: (data: T) => MenuItem[],
+	render: (data: T) => MenuItem[] | MenuContent,
 ): PrefetchSubmenuAction =>
 	({
 		kind: "prefetchSubmenu",
-		load: async () => render(await load()),
+		load: async () => {
+			const rendered = render(await load());
+			return Array.isArray(rendered) ? { items: rendered } : rendered;
+		},
 	}) as PrefetchSubmenuAction;
 
 // Generic over the spec's row type and erases it here, so call sites pass
@@ -181,7 +192,7 @@ export interface MenuItem {
 // it -- no separate "content changed" diffing needed.
 type Remote =
 	| { status: "loading" }
-	| { status: "ready"; items: MenuItem[] }
+	| ({ status: "ready" } & MenuContent)
 	| { status: "failed"; error: string };
 
 interface MenuScene {
@@ -336,12 +347,12 @@ function errorMessage(err: unknown): string {
 function loadEffect(session: number, action: PrefetchSubmenuAction): Effect {
 	return (dispatch) => {
 		action.load().then(
-			(items) =>
+			(content) =>
 				dispatch({
 					type: "loadSettled",
 					session,
 					action,
-					result: { status: "ready", items },
+					result: { status: "ready", ...content },
 				}),
 			(err: unknown) =>
 				dispatch({
@@ -527,12 +538,21 @@ function sceneItems(scene: MenuScene): MenuItem[] {
 	return scene.content.status === "ready" ? scene.content.items : [];
 }
 
+// The scene's breadcrumb plus its loaded title, if any -- what's drawn,
+// and what child levels extend.
+function sceneBreadcrumb(scene: MenuScene): string[] {
+	const { content } = scene;
+	return content.status === "ready" && content.title
+		? [...scene.breadcrumb, content.title]
+		: scene.breadcrumb;
+}
+
 function mountMenu(scene: MenuScene): MountedScene {
 	// Blind-typing grace period: keys are live immediately, but nothing is
 	// drawn until revealMenu() fires (or this mount is replaced by
 	// something else first) -- see armRevealTimer()/revealMenu() below.
 	if (revealed) renderMenu(scene);
-	bindKeys(sceneItems(scene), scene.breadcrumb);
+	bindKeys(sceneItems(scene), sceneBreadcrumb(scene));
 	startFocusWatcher();
 	startMouseWatcher();
 	return {
@@ -768,7 +788,7 @@ function statusText(content: Remote): string | null {
 }
 
 function renderMenu(scene: MenuScene, opts: RenderOpts = {}): void {
-	const { breadcrumb } = scene;
+	const breadcrumb = sceneBreadcrumb(scene);
 	const options = sceneItems(scene);
 	const status = statusText(scene.content);
 	const rowCount = options.length + (status ? 1 : 0);
