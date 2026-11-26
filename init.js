@@ -17816,9 +17816,7 @@ function symbol(name) {
 var APP_BUNDLE_IDS = {
   alacritty: "org.alacritty",
   zed: "dev.zed.Zed",
-  arc: "company.thebrowser.Browser",
   telegram: "ru.keepcoder.Telegram",
-  vscode: "com.microsoft.VSCode",
   messages: "com.apple.MobileSMS",
   safari: "com.apple.Safari",
   bear: "net.shinyfrog.bear",
@@ -17865,7 +17863,7 @@ function ensureDailyNote() {
   return path;
 }
 function openDailyNote() {
-  summon("journal", "hx " + shellQuote(ensureDailyNote()));
+  summon("journal", `hx ${shellQuote(ensureDailyNote())}`);
 }
 function openDailyNoteInShelv() {
   hs.task.create(
@@ -18018,8 +18016,6 @@ var menuTree = [
     action: Submenu([
       appItem("t", "Telegram", APP_BUNDLE_IDS.telegram),
       appItem("z", "Zed", APP_BUNDLE_IDS.zed),
-      appItem("a", "Arc", APP_BUNDLE_IDS.arc),
-      appItem("v", "VS Code", APP_BUNDLE_IDS.vscode),
       appItem("m", "Messages", APP_BUNDLE_IDS.messages),
       appItem("s", "Safari", APP_BUNDLE_IDS.safari),
       appItem("b", "Bear", APP_BUNDLE_IDS.bear),
@@ -18057,37 +18053,6 @@ var menuTree = [
     label: "Process explorer",
     icon: symbol("cpu"),
     action: Chooser(() => spec6())
-  },
-  {
-    key: "a",
-    label: "Arc actions",
-    // Real app icon, matching the original Leader Key config's iconPath
-    // (a plain .app path there resolves to the app's own icon).
-    icon: HSImage.fromAppBundle(APP_BUNDLE_IDS.arc) ?? void 0,
-    action: Submenu([
-      {
-        key: "a",
-        label: "Select space",
-        icon: symbol("list.star"),
-        action: Url(
-          "raycast://extensions/the-browser-company/arc/search-spaces"
-        )
-      },
-      {
-        key: "s",
-        label: "Search tab",
-        icon: symbol("filemenu.and.selection"),
-        action: Url("raycast://extensions/the-browser-company/arc/search-tabs")
-      },
-      {
-        key: "t",
-        label: "new tab",
-        icon: symbol("plus.square.fill.on.square.fill"),
-        action: Url(
-          "raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D"
-        )
-      }
-    ])
   },
   {
     key: "u",

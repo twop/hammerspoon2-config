@@ -40,15 +40,14 @@ import {
 } from "./leader-menu";
 
 function symbol(name: string): HSImage {
+	// biome-ignore lint/style/noNonNullAssertion: <explanation>
 	return HSImage.fromSymbol(name)!;
 }
 
 const APP_BUNDLE_IDS = {
 	alacritty: "org.alacritty",
 	zed: "dev.zed.Zed",
-	arc: "company.thebrowser.Browser",
 	telegram: "ru.keepcoder.Telegram",
-	vscode: "com.microsoft.VSCode",
 	messages: "com.apple.MobileSMS",
 	safari: "com.apple.Safari",
 	bear: "net.shinyfrog.bear",
@@ -130,7 +129,7 @@ function ensureDailyNote(): string {
 }
 
 function openDailyNote(): void {
-	Term.summon("journal", "hx " + Term.shellQuote(ensureDailyNote()));
+	Term.summon("journal", `hx ${Term.shellQuote(ensureDailyNote())}`);
 }
 
 function openDailyNoteInShelv(): void {
@@ -298,8 +297,6 @@ export const menuTree: MenuItem[] = [
 		action: Submenu([
 			appItem("t", "Telegram", APP_BUNDLE_IDS.telegram),
 			appItem("z", "Zed", APP_BUNDLE_IDS.zed),
-			appItem("a", "Arc", APP_BUNDLE_IDS.arc),
-			appItem("v", "VS Code", APP_BUNDLE_IDS.vscode),
 			appItem("m", "Messages", APP_BUNDLE_IDS.messages),
 			appItem("s", "Safari", APP_BUNDLE_IDS.safari),
 			appItem("b", "Bear", APP_BUNDLE_IDS.bear),
@@ -342,38 +339,6 @@ export const menuTree: MenuItem[] = [
 		label: "Process explorer",
 		icon: symbol("cpu"),
 		action: Chooser(() => ProcessExplorer.spec()),
-	},
-
-	{
-		key: "a",
-		label: "Arc actions",
-		// Real app icon, matching the original Leader Key config's iconPath
-		// (a plain .app path there resolves to the app's own icon).
-		icon: HSImage.fromAppBundle(APP_BUNDLE_IDS.arc) ?? undefined,
-		action: Submenu([
-			{
-				key: "a",
-				label: "Select space",
-				icon: symbol("list.star"),
-				action: Url(
-					"raycast://extensions/the-browser-company/arc/search-spaces",
-				),
-			},
-			{
-				key: "s",
-				label: "Search tab",
-				icon: symbol("filemenu.and.selection"),
-				action: Url("raycast://extensions/the-browser-company/arc/search-tabs"),
-			},
-			{
-				key: "t",
-				label: "new tab",
-				icon: symbol("plus.square.fill.on.square.fill"),
-				action: Url(
-					"raycast://extensions/the-browser-company/arc/new-tab?arguments=%7B%22space%22%3A%22%22%2C%22url%22%3A%22%22%7D",
-				),
-			},
-		]),
 	},
 
 	{
